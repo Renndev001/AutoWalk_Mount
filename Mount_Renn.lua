@@ -1,9 +1,9 @@
 --[[
     Renn HUB Universal - Motion Recorder Pro
-    Refactored with Obsidian UI Library
-    All features preserved: Recording, Playback (with smart path recovery), Trail, Save/Load, Player Features
-    Enhanced stability for Fly, Noclip, and respawn persistence.
-    No forced teleportation during playback deviation - uses natural movement recovery.
+    Migrated to Obsidian UI Library (Based on Rayfield version audit)
+    All features preserved: 5 tabs, 10 buttons, 6 toggles, 3 sliders, 1 dropdown, 1 input, 1 color picker, 2 paragraphs
+    Includes: Recording, Playback with Path Recovery, Trail, Save/Load, Fly, Noclip, Jump High, God Mode
+    Respawn persistence, stable Fly/Noclip, natural path recovery
 ]]
 
 -- ========== LOAD OBSIDIAN UI ==========
@@ -221,7 +221,6 @@ local function initiatePathRecovery(forceTeleport)
         return
     end
 
-    -- If distance is too large and we haven't shown a dialog yet
     if distanceToPath > 150 and not recoveryDialogShown then
         recoveryDialogShown = true
         pathRecoveryPendingUserInput = true
@@ -236,11 +235,10 @@ local function initiatePathRecovery(forceTeleport)
             end
         end
 
-        -- Create a dialog with options using Obsidian's notification with actions
         Obsidian:Notify({
             Title = "Distance Warning",
             Content = string.format("Distance to path: %.1f studs. Select an action:", distanceToPath),
-            Duration = 0, -- Persistent until action
+            Duration = 0,
             Actions = {
                 ["Recover"] = function()
                     pathRecoveryPendingUserInput = false
@@ -271,7 +269,6 @@ local function initiatePathRecovery(forceTeleport)
         return
     end
 
-    -- Small distance, recover naturally using pathfinding
     pathRecoveryActive = true
     humanoid.PlatformStand = true
     humanoid.AutoRotate = false
@@ -451,7 +448,6 @@ local function startPlayback(frameData, isReverse, speed, loop)
             end
             lastJumpState = isJumping
 
-            -- Periodic deviation check (every ~1 second)
             if math.random(1, 30) == 1 then
                 local currentPosition = humanoidRootPart.Position
                 local expectedPosition = frame1.position:Lerp(frame2.position, alpha)
@@ -513,7 +509,6 @@ local function saveCurrentRecording()
         return
     end
 
-    -- Use Obsidian input dialog
     Obsidian:Input({
         Title = "Save Recording",
         Description = "Enter a name for this recording",
@@ -621,7 +616,6 @@ end
 local function setNoclip(state)
     noclipEnabled = state
     updateNoclip()
-    -- Also connect to descendant added/removed events for dynamic parts
     if noclipConnection then noclipConnection:Disconnect() end
     if state then
         noclipConnection = character.DescendantAdded:Connect(function(desc)
@@ -682,26 +676,21 @@ local function onCharacterAdded(newCharacter)
 
     jumpPowerDefault = humanoid.JumpPower
 
-    -- Restore fly if it was enabled
     if flyEnabled then
         disableFly()
         enableFly()
     end
-    -- Restore noclip if it was enabled (reinitialize)
     if noclipEnabled then
         originalCollisionStates = {}
         setNoclip(true)
     end
-    -- Restore jump high
     if jumpHighEnabled then
         setJumpHigh(true)
     end
-    -- Restore god mode
     if godModeEnabled then
         setGodMode(true)
     end
 
-    -- Clear trail to avoid old parts
     cleanupTrail()
 end
 
@@ -736,14 +725,14 @@ end)
 -- ========== OBSIDIAN UI INITIALIZATION ==========
 local mainWindow = Obsidian:CreateWindow({
     Name = "Renn HUB Universal - Motion Recorder Pro",
-    Size = "380x520",
+    Size = "420x560",
     Theme = "Dark",
     ScriptVersion = "3.0",
     LoadingTitle = "Renn HUB",
     LoadingSubtitle = "Motion Recorder Pro"
 })
 
--- Tab: Motion Recorder
+-- Tab 1: Motion Recorder
 local recordingTab = mainWindow:CreateTab("Motion Recorder")
 recordingTab:CreateSection("Recording Controls")
 recordingTab:CreateButton({
@@ -763,7 +752,7 @@ recordingTab:CreateButton({
     Callback = stopRecording
 })
 
--- Tab: Playback
+-- Tab 2: Playback
 local playbackTab = mainWindow:CreateTab("Playback")
 playbackTab:CreateSection("Playback Controls")
 playbackTab:CreateButton({
@@ -817,7 +806,7 @@ playbackTab:CreateToggle({
     end
 })
 
--- Tab: Saves
+-- Tab 3: Saves
 local savesTab = mainWindow:CreateTab("Saves")
 savesTab:CreateSection("Save Management")
 savesTab:CreateButton({
@@ -825,11 +814,8 @@ savesTab:CreateButton({
     Callback = saveCurrentRecording
 })
 
--- Dropdown for loading recordings (dynamic)
 local recordingsList = getSavedRecordingsList()
-if #recordingsList == 0 then
-    recordingsList = {"(empty)"}
-end
+if #recordingsList == 0 then recordingsList = {"(empty)"} end
 local loadDropdown = savesTab:CreateDropdown({
     Name = "Load Recording",
     Options = recordingsList,
@@ -841,7 +827,6 @@ local loadDropdown = savesTab:CreateDropdown({
     end
 })
 
--- Input for delete
 savesTab:CreateInput({
     Name = "Delete Recording",
     Placeholder = "Recording name",
@@ -850,7 +835,6 @@ savesTab:CreateInput({
     end
 })
 
--- Refresh button
 savesTab:CreateButton({
     Name = "Refresh List",
     Callback = function()
@@ -862,7 +846,6 @@ savesTab:CreateButton({
     end
 })
 
--- Global callback for refreshing from save/delete
 local refreshRecordingListCallback = function()
     local newList = getSavedRecordingsList()
     if #newList == 0 then newList = {"(empty)"} end
@@ -870,7 +853,7 @@ local refreshRecordingListCallback = function()
     loadDropdown:SetDefault(newList[1])
 end
 
--- Tab: Visual & Player
+-- Tab 4: Visual & Player
 local visualPlayerTab = mainWindow:CreateTab("Visual & Player")
 visualPlayerTab:CreateSection("Trail")
 visualPlayerTab:CreateToggle({
@@ -954,7 +937,7 @@ visualPlayerTab:CreateToggle({
     end
 })
 
--- Tab: About
+-- Tab 5: About
 local aboutTab = mainWindow:CreateTab("About")
 aboutTab:CreateSection("About")
 aboutTab:CreateParagraph({
@@ -967,5 +950,4 @@ aboutTab:CreateParagraph({
     Content = "✨ Speed Run Mode\n✨ Ghost Mode\n✨ Auto Record on Death\n✨ Export/Import recordings"
 })
 
--- Initial notification
 showNotification("Renn HUB Universal - Motion Recorder Pro is ready!", "success")
