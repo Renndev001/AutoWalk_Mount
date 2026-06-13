@@ -1,6 +1,8 @@
 --[[
-    ⚡ TAS+ Utility - Rayfield Edition ⚡
-    Semua fitur dalam satu script dengan GUI elegan.
+    ⚡ Renn HUB - Advanced TAS+ with Natural Playback ⚡
+    - 60 FPS recording
+    - Natural walking to nearest path point before replay
+    - Animations (walk/run/jump) preserved
 --]]
 
 -- Load Rayfield
@@ -14,10 +16,11 @@ local humanoid = char:WaitForChild("Humanoid")
 local runService = game:GetService("RunService")
 local userInput = game:GetService("UserInputService")
 local httpService = game:GetService("HttpService")
+local tweenService = game:GetService("TweenService")
 
 -- TAS Engine
 local recording = false
-local recordedFrames = {}
+local recordedFrames = {}      -- {time, cframe, velocity, moveDirection, isJumping}
 local startTime = 0
 local playing = false
 local reverse = false
@@ -26,6 +29,7 @@ local playbackSpeed = 1
 local playbackThread = nil
 local trailObjects = {}
 local trailVisible = true
+local naturalApproach = true   -- fitur natural approach ke jalur
 
 -- Teleport & Checkpoint
 local checkpoints = {}
@@ -52,18 +56,18 @@ local antiAfkConnection = nil
 local function notify(msg, duration)
     duration = duration or 2
     Rayfield:Notify({
-        Title = "TAS+ Utility",
+        Title = "Renn HUB",
         Content = msg,
         Duration = duration
     })
-    print("[TAS+] " .. msg)
+    print("[Renn HUB] " .. msg)
 end
 
 local function getCharacter()
     return player.Character
 end
 
--- ========== TAS ENGINE ==========
+-- ========== TAS ENGINE (60 FPS) ==========
 local function startRecording()
     if recording then notify("Already recording") return end
     if playing then notify("Stop playback first") return end
@@ -82,7 +86,7 @@ local function startRecording()
             isJumping = (hum and hum.FloorMaterial == Enum.Material.Air) or false
         })
     end
-    notify("🔴 Recording started", 1)
+    notify("🔴 Recording started (60 FPS)", 1)
 end
 
 local function stopRecording()
@@ -97,6 +101,7 @@ local function stopRecording()
     notify(string.format("⏹️ Stopped (%d frames, %.2f sec)", #recordedFrames, duration), 2)
 end
 
+-- Trail (line neon)
 local function clearTrail()
     for _, obj in ipairs(trailObjects) do
         if obj and obj.Parent then obj:Destroy() end
@@ -135,26 +140,64 @@ local function toggleTrail()
     end
 end
 
-local function stopPlayback()
-    if playbackThread then
-        coroutine.close(playbackThread)
-        playbackThread = nil
+-- ========== NATURAL PLAYBACK (BERJALAN KE TITIK TERDEKAT) ==========
+local function findNearestPathPoint(characterPos)
+    local nearestDist = math.huge
+    local nearestIndex = 1
+    for i, frame in ipairs(recordedFrames) do
+        local dist = (characterPos - frame.cframe.Position).Magnitude
+        if dist < nearestDist then
+            nearestDist = dist
+            nearestIndex = i
+        end
     end
-    playing = false
-    reverse = false
-    loopPlay = false
-    local charNow = getCharacter()
-    if charNow and charNow:FindFirstChild("Humanoid") then
-        charNow.Humanoid.PlatformStand = false
-    end
-    workspace.Gravity = 196.2
-    notify("Playback stopped", 1)
+    return nearestIndex, nearestDist
 end
 
-local function startPlayback(data, isReverse, isLoop, speed)
+local function walkToPosition(targetPos, speed)
+    if not humanoid or not hrp then return end
+    local originalWS = humanoid.WalkSpeed
+    humanoid.WalkSpeed = speed or 16
+    humanoid:MoveTo(targetPos)
+    -- Tunggu sampai jarak kurang dari 2 studs
+    while (hrp.Position - targetPos).Magnitude > 2 and humanoid.MoveToFinished do
+        task.wait(0.1)
+    end
+    humanoid:MoveTo(hrp.Position) -- stop
+    humanoid.WalkSpeed = originalWS
+end
+
+local function startNaturalPlayback(data, isReverse, isLoop, speed)
     if recording then notify("Stop recording first") return end
     if playing then stopPlayback() end
     if not data or #data < 2 then notify("No recording data") return end
+
+    -- Cari titik terdekat dengan posisi karakter saat ini
+    local startIndex, distance = findNearestPathPoint(hrp.Position)
+    if distance > 5 then
+        notify("Approaching nearest path point...", 2)
+        walkToPosition(data[startIndex].cframe.Position, 16)
+    end
+
+    -- Sekarang mulai replay dari index terdekat
+    -- Potong data agar mulai dari startIndex
+    local truncatedData = {}
+    if isReverse then
+        for i = startIndex, 1, -1 do
+            table.insert(truncatedData, data[i])
+        end
+    else
+        for i = startIndex, #data do
+            table.insert(truncatedData, data[i])
+        end
+    end
+
+    -- Panggil fungsi playback internal dengan data yang sudah dipotong
+    startPlaybackFromIndex(truncatedData, isReverse, isLoop, speed, startIndex)
+end
+
+-- Playback utama (dengan interpolasi)
+local function startPlaybackFromIndex(data, isReverse, isLoop, speed, originalStartIndex)
     playing = true
     reverse = isReverse
     loopPlay = isLoop
@@ -197,6 +240,7 @@ local function startPlayback(data, isReverse, isLoop, speed)
                 end
             end
 
+            -- Interpolasi frame
             local idx = 1
             if reverse then
                 for i = #playbackData, 1, -1 do
@@ -208,11 +252,12 @@ local function startPlayback(data, isReverse, isLoop, speed)
                 if idx >= #playbackData then idx = #playbackData - 1 end
                 local t = (progress * totalTime - playbackData[idx].time) / (playbackData[idx+1].time - playbackData[idx].time)
                 t = math.clamp(t, 0, 1)
-                local cf1 = playbackData[idx+1].cframe
-                local cf2 = playbackData[idx].cframe
-                local newCF = cf1:Lerp(cf2, t)
+                local newCF = playbackData[idx+1].cframe:Lerp(playbackData[idx].cframe, t)
                 if hrp and hrp.Parent then hrp.CFrame = newCF end
-                if humanoid then humanoid:MoveTo(newCF.Position + (playbackData[idx].moveDirection * 5)) end
+                -- Terapkan MoveDirection untuk animasi
+                if humanoid then
+                    humanoid:MoveTo(newCF.Position + (playbackData[idx].moveDirection * 5))
+                end
             else
                 for i = 1, #playbackData-1 do
                     if playbackData[i+1].time >= progress * totalTime then
@@ -224,15 +269,18 @@ local function startPlayback(data, isReverse, isLoop, speed)
                 t = math.clamp(t, 0, 1)
                 local newCF = playbackData[idx].cframe:Lerp(playbackData[idx+1].cframe, t)
                 if hrp and hrp.Parent then hrp.CFrame = newCF end
-                if humanoid then humanoid:MoveTo(newCF.Position + (playbackData[idx].moveDirection * 5)) end
+                if humanoid then
+                    humanoid:MoveTo(newCF.Position + (playbackData[idx].moveDirection * 5))
+                end
             end
 
+            -- Simulasi lompat
             local currentFrame = playbackData[math.floor(idx)]
             if currentFrame and currentFrame.isJumping and humanoid and humanoid.FloorMaterial ~= Enum.Material.Air then
                 humanoid.Jump = true
             end
 
-            task.wait(0.016)
+            task.wait(0.016) -- 60 FPS
         end
         workspace.Gravity = originalGravity
         if charNow and charNow:FindFirstChild("Humanoid") then
@@ -243,6 +291,28 @@ local function startPlayback(data, isReverse, isLoop, speed)
         notify("Playback finished", 1)
     end)
     coroutine.resume(playbackThread)
+end
+
+-- Stop playback
+local function stopPlayback()
+    if playbackThread then
+        coroutine.close(playbackThread)
+        playbackThread = nil
+    end
+    playing = false
+    reverse = false
+    loopPlay = false
+    local charNow = getCharacter()
+    if charNow and charNow:FindFirstChild("Humanoid") then
+        charNow.Humanoid.PlatformStand = false
+    end
+    workspace.Gravity = 196.2
+    notify("Playback stopped", 1)
+end
+
+-- Wrapper untuk playback dengan natural approach
+local function startPlayback(data, isReverse, isLoop, speed)
+    startNaturalPlayback(data, isReverse, isLoop, speed)
 end
 
 -- ========== TELEPORT & CHECKPOINT ==========
@@ -509,7 +579,7 @@ local function exportToDiscord(webhook)
     end
     local json = httpService:JSONEncode(data)
     local payload = {
-        content = "**TAS+ Data Export**",
+        content = "**Renn HUB Data Export**",
         embeds = {{
             title = "Recorded Data",
             description = string.format("Checkpoints: %d\nRecording frames: %d\nDuration: %.2f sec", #checkpoints, #recordedFrames, data.recording.duration),
@@ -534,26 +604,26 @@ local function exportToDiscord(webhook)
     end
 end
 
--- ========== RAYFIELD GUI ==========
+-- ========== RAYFIELD GUI with Custom Names ==========
 local Window = Rayfield:CreateWindow({
-    Name = "TAS+ Utility",
-    Icon = "rbxassetid://1234567890", -- optional, ganti jika punya icon
-    LoadingTitle = "Loading TAS+",
-    LoadingSubtitle = "by AI",
+    Name = "Renn HUB",  -- Judul diubah
+    Icon = "rbxassetid://1234567890",
+    LoadingTitle = "Loading Renn HUB",
+    LoadingSubtitle = "by Renn",
     Theme = "Default",
     DisableThemeEditor = false
 })
 
--- Tab 1: TAS Engine
-local tasTab = Window:CreateTab("🎥 TAS Engine")
+-- Tab 1: TAS Engine (Recorder)
+local tasTab = Window:CreateTab("🎥 Recorder")  -- Nama tab diubah
 tasTab:CreateSection("Recording")
-tasTab:CreateButton({Name = "Start Recording", Callback = startRecording})
+tasTab:CreateButton({Name = "Start Recording (60 FPS)", Callback = startRecording})
 tasTab:CreateButton({Name = "Stop Recording", Callback = stopRecording})
-tasTab:CreateButton({Name = "Toggle Trail (Show/Hide)", Callback = toggleTrail})
+tasTab:CreateButton({Name = "Toggle Trail (Line Neon)", Callback = toggleTrail})
 
 tasTab:CreateSection("Playback Controls")
-tasTab:CreateButton({Name = "Play Normal", Callback = function() startPlayback(recordedFrames, false, false, 1) end})
-tasTab:CreateButton({Name = "Play Reverse", Callback = function() startPlayback(recordedFrames, true, false, 1) end})
+tasTab:CreateButton({Name = "Play Normal (Natural Approach)", Callback = function() startPlayback(recordedFrames, false, false, 1) end})
+tasTab:CreateButton({Name = "Play Reverse (Natural)", Callback = function() startPlayback(recordedFrames, true, false, 1) end})
 tasTab:CreateButton({Name = "Loop On/Off", Callback = function() loopPlay = not loopPlay; notify("Loop: " .. tostring(loopPlay)) end})
 tasTab:CreateButton({Name = "Speed 0.5x", Callback = function() startPlayback(recordedFrames, false, loopPlay, 0.5) end})
 tasTab:CreateButton({Name = "Speed 2x", Callback = function() startPlayback(recordedFrames, false, loopPlay, 2) end})
@@ -573,28 +643,28 @@ teleTab:CreateButton({Name = "Auto Checkpoint OFF", Callback = stopAutoCheckpoin
 teleTab:CreateButton({Name = "Auto Teleport List (Loop)", Callback = startAutoTeleport})
 teleTab:CreateButton({Name = "Stop Auto Teleport", Callback = stopAutoTeleport})
 
--- Tab 3: Movement Cheats
-local moveTab = Window:CreateTab("⚡ Movement")
-moveTab:CreateSection("WalkSpeed")
-moveTab:CreateButton({Name = "WalkSpeed 50", Callback = function() setWalkspeed(50) end})
-moveTab:CreateButton({Name = "WalkSpeed 100", Callback = function() setWalkspeed(100) end})
-moveTab:CreateButton({Name = "WalkSpeed 250", Callback = function() setWalkspeed(250) end})
+-- Tab 3: TOOLS (ganti dari Movement)
+local toolsTab = Window:CreateTab("🛠️ TOOLS")  -- Label Automation diganti TOOLS
+toolsTab:CreateSection("WalkSpeed")
+toolsTab:CreateButton({Name = "WalkSpeed 50", Callback = function() setWalkspeed(50) end})
+toolsTab:CreateButton({Name = "WalkSpeed 100", Callback = function() setWalkspeed(100) end})
+toolsTab:CreateButton({Name = "WalkSpeed 250", Callback = function() setWalkspeed(250) end})
 
-moveTab:CreateSection("JumpPower")
-moveTab:CreateButton({Name = "JumpPower 80", Callback = function() setJumpPower(80) end})
-moveTab:CreateButton({Name = "JumpPower 200", Callback = function() setJumpPower(200) end})
+toolsTab:CreateSection("JumpPower")
+toolsTab:CreateButton({Name = "JumpPower 80", Callback = function() setJumpPower(80) end})
+toolsTab:CreateButton({Name = "JumpPower 200", Callback = function() setJumpPower(200) end})
 
-moveTab:CreateSection("Special Moves")
-moveTab:CreateButton({Name = "Infinite Jump ON", Callback = infiniteJump})
-moveTab:CreateButton({Name = "Infinite Jump OFF", Callback = stopInfiniteJump})
-moveTab:CreateButton({Name = "Fly Mode ON", Callback = function() startFly(50) end})
-moveTab:CreateButton({Name = "Fly Mode OFF", Callback = stopFly})
-moveTab:CreateButton({Name = "NoClip ON", Callback = enableNoclip})
-moveTab:CreateButton({Name = "NoClip OFF", Callback = disableNoclip})
-moveTab:CreateButton({Name = "Reset Movement", Callback = resetMovement})
+toolsTab:CreateSection("Special Moves")
+toolsTab:CreateButton({Name = "Infinite Jump ON", Callback = infiniteJump})
+toolsTab:CreateButton({Name = "Infinite Jump OFF", Callback = stopInfiniteJump})
+toolsTab:CreateButton({Name = "Fly Mode ON", Callback = function() startFly(50) end})
+toolsTab:CreateButton({Name = "Fly Mode OFF", Callback = stopFly})
+toolsTab:CreateButton({Name = "NoClip ON", Callback = enableNoclip})
+toolsTab:CreateButton({Name = "NoClip OFF", Callback = disableNoclip})
+toolsTab:CreateButton({Name = "Reset Movement", Callback = resetMovement})
 
 -- Tab 4: Utilities
-local utilTab = Window:CreateTab("🛠️ Utilities")
+local utilTab = Window:CreateTab("⚙️ Utilities")
 utilTab:CreateSection("Anti AFK")
 utilTab:CreateButton({Name = "Anti AFK ON", Callback = startAntiAFK})
 utilTab:CreateButton({Name = "Anti AFK OFF", Callback = stopAntiAFK})
@@ -622,5 +692,124 @@ cloudTab:CreateButton({Name = "Export to Discord", Callback = function()
     end
 end})
 
+-- ========== TAMBAHAN: DRAG & RESIZE UNTUK GUI RAYFIELD ==========
+-- Fungsi untuk membuat GUI bisa digeser dan diubah ukuran
+local function makeDraggable(guiObject, dragHandle)
+    local dragging = false
+    local dragStart = Vector2.new()
+    local startPos = UDim2.new()
+    local dragInput = nil
+
+    dragHandle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = guiObject.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    dragHandle.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            guiObject.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+local function makeResizable(guiObject, resizeHandle, minSize, maxSize)
+    local resizing = false
+    local startMouse = Vector2.new()
+    local startSize = UDim2.new()
+
+    resizeHandle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            resizing = true
+            startMouse = input.Position
+            startSize = guiObject.Size
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    resizing = false
+                end
+            end)
+        end
+    end)
+
+    resizeHandle.InputChanged:Connect(function(input)
+        if resizing and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - startMouse
+            local newWidth = math.clamp(startSize.X.Offset + delta.X, minSize.X.Offset, maxSize.X.Offset)
+            local newHeight = math.clamp(startSize.Y.Offset + delta.Y, minSize.Y.Offset, maxSize.Y.Offset)
+            guiObject.Size = UDim2.new(0, newWidth, 0, newHeight)
+        end
+    end)
+end
+
+-- Cari frame utama milik Rayfield
+local function addDragAndResize()
+    task.wait(0.5)
+    local rayfieldGui = nil
+    for _, gui in ipairs(player.PlayerGui:GetChildren()) do
+        if gui.Name:find("Rayfield") or gui.Name:find("Renn HUB") then
+            rayfieldGui = gui
+            break
+        end
+    end
+    if not rayfieldGui then
+        warn("Tidak menemukan GUI Rayfield, coba lagi nanti")
+        return
+    end
+    
+    local mainFrame = nil
+    for _, child in ipairs(rayfieldGui:GetDescendants()) do
+        if child:IsA("Frame") and child.Name == "Main" then
+            mainFrame = child
+            break
+        end
+    end
+    if not mainFrame then
+        for _, child in ipairs(rayfieldGui:GetDescendants()) do
+            if child:IsA("Frame") and child.AbsoluteSize.X > 200 and child.AbsoluteSize.Y > 200 then
+                mainFrame = child
+                break
+            end
+        end
+    end
+    if not mainFrame then
+        warn("Tidak menemukan frame utama untuk drag/resize")
+        return
+    end
+    
+    local dragHandle = Instance.new("Frame")
+    dragHandle.Size = UDim2.new(1, 0, 0, 25)
+    dragHandle.BackgroundTransparency = 1
+    dragHandle.Parent = mainFrame
+    
+    local resizeHandle = Instance.new("Frame")
+    resizeHandle.Size = UDim2.new(0, 15, 0, 15)
+    resizeHandle.Position = UDim2.new(1, -15, 1, -15)
+    resizeHandle.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    resizeHandle.BackgroundTransparency = 0.5
+    resizeHandle.BorderSizePixel = 0
+    resizeHandle.Parent = mainFrame
+    
+    local triangle = Instance.new("ImageLabel")
+    triangle.Size = UDim2.new(1, 0, 1, 0)
+    triangle.Image = "rbxasset://textures/ui/ResizeImage.png"
+    triangle.BackgroundTransparency = 1
+    triangle.Parent = resizeHandle
+    
+    makeDraggable(mainFrame, dragHandle)
+    makeResizable(mainFrame, resizeHandle, UDim2.new(0, 300, 0, 400), UDim2.new(0, 800, 0, 700))
+    
+    notify("GUI bisa digeser (drag title bar) dan diubah ukuran (pojok kanan bawah)", 3)
+end
+
+task.spawn(addDragAndResize)
+
 -- Notifikasi siap
-notify("✅ TAS+ Utility with Rayfield loaded!", 3)
+notify("✅ Renn HUB loaded! 60 FPS recording + Natural Playback aktif", 3)
