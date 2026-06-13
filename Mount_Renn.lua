@@ -1,11 +1,36 @@
 --[[
     Renn HUB Universal - Motion Recorder Pro
-    Dengan sistem Path Recovery untuk replay
-    Struktur GUI: Motion Recorder, Playback, Saves, Visual, About
+    Dengan sistem Path Recovery
+    FIX: Perbaikan loading WindUI dan error handling
 --]]
 
--- ========== LOAD WINDUI ==========
-local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+-- ========== LOAD WINDUI DENGAN ERROR HANDLING ==========
+local WindUI
+local loadSuccess, loadErr = pcall(function()
+    -- Gunakan raw URL yang benar dari GitHub
+    WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/main.lua"))()
+end)
+
+if not loadSuccess then
+    -- Fallback: buat notifikasi sederhana dengan GUI sendiri
+    warn("Gagal load WindUI: " .. tostring(loadErr))
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "RennHUB_Error"
+    ScreenGui.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 300, 0, 100)
+    frame.Position = UDim2.new(0.5, -150, 0.5, -50)
+    frame.BackgroundColor3 = Color3.fromRGB(30,30,40)
+    frame.Parent = ScreenGui
+    local text = Instance.new("TextLabel")
+    text.Size = UDim2.new(1,0,1,0)
+    text.BackgroundTransparency = 1
+    text.Text = "Gagal memuat WindUI!\n" .. tostring(loadErr):sub(1, 100)
+    text.TextColor3 = Color3.new(1,1,1)
+    text.TextWrapped = true
+    text.Parent = frame
+    error("WindUI tidak dapat dimuat: " .. tostring(loadErr))
+end
 
 -- ========== VARIABEL GLOBAL ==========
 local player = game.Players.LocalPlayer
@@ -67,16 +92,18 @@ local godModeEnabled = false
 
 -- ========== FUNGSI NOTIFIKASI ==========
 local function notif(msg, msgType)
-    local title = msgType == "error" and "Error" or (msgType == "success" and "Success" or "Info")
-    WindUI:Notify({
-        Title = title,
-        Description = msg,
-        Duration = 2
-    })
+    if WindUI and WindUI.Notify then
+        local title = msgType == "error" and "Error" or (msgType == "success" and "Success" or "Info")
+        WindUI:Notify({
+            Title = title,
+            Description = msg,
+            Duration = 2
+        })
+    end
     print("[RennHUB] " .. msg)
 end
 
--- ========== TRAIL GARIS KONTINU ==========
+-- ========== TRAIL ==========
 local function clearTrail()
     for _, part in pairs(trailParts) do
         if part and part.Parent then part:Destroy() end
@@ -159,17 +186,30 @@ end
 
 local function saveCurrentRecordingManually()
     if #recordedFrames == 0 then notif("Tidak ada rekaman", "error") return end
-    local dialog = WindUI:Input({
-        Title = "Simpan Rekaman",
-        Description = "Masukkan nama rekaman",
-        Placeholder = "Nama rekaman"
-    })
-    dialog.OnSubmit = function(name)
-        if name == "" then name = "rec_" .. os.time() end
+    if WindUI and WindUI.Input then
+        local dialog = WindUI:Input({
+            Title = "Simpan Rekaman",
+            Description = "Masukkan nama rekaman",
+            Placeholder = "Nama rekaman"
+        })
+        dialog.OnSubmit = function(name)
+            if name == "" then name = "rec_" .. os.time() end
+            local folder = player:FindFirstChild(SAVE_FOLDER) or Instance.new("Folder", player)
+            folder.Name = SAVE_FOLDER
+            local existing = folder:FindFirstChild(name)
+            if existing then existing:Destroy() end
+            local val = Instance.new("StringValue")
+            val.Name = name
+            val.Value = httpService:JSONEncode({frames = recordedFrames, timestamp = os.time()})
+            val.Parent = folder
+            notif("Tersimpan: " .. name, "success")
+            if refreshSaveListCallback then refreshSaveListCallback() end
+        end
+    else
+        -- Fallback tanpa dialog
+        local name = "rec_" .. os.time()
         local folder = player:FindFirstChild(SAVE_FOLDER) or Instance.new("Folder", player)
         folder.Name = SAVE_FOLDER
-        local existing = folder:FindFirstChild(name)
-        if existing then existing:Destroy() end
         local val = Instance.new("StringValue")
         val.Name = name
         val.Value = httpService:JSONEncode({frames = recordedFrames, timestamp = os.time()})
@@ -196,7 +236,6 @@ runService.RenderStepped:Connect(function()
 end)
 
 -- ========== PATH RECOVERY ==========
--- Cari frame terdekat dengan posisi tertentu
 local function findNearestFrame(pos, data)
     local nearestIdx = 1
     local nearestDist = (data[1].position - pos).Magnitude
@@ -210,7 +249,6 @@ local function findNearestFrame(pos, data)
     return nearestIdx, data[nearestIdx].time, nearestDist
 end
 
--- Hentikan recovery dan lanjutkan replay
 local function cancelRecovery()
     if recoveryConnection then recoveryConnection:Disconnect() recoveryConnection = nil end
     if recoveryThread then task.cancel(recoveryThread) recoveryThread = nil end
@@ -218,12 +256,10 @@ local function cancelRecovery()
     recoveryWaitingForUser = false
     humanoid.PlatformStand = false
     humanoid.AutoRotate = true
-    -- Hentikan pergerakan paksa
     if hrp:FindFirstChild("BodyVelocity") then hrp:FindFirstChild("BodyVelocity"):Destroy() end
     if hrp:FindFirstChild("BodyPosition") then hrp:FindFirstChild("BodyPosition"):Destroy() end
 end
 
--- Mulai recovery: gerakkan karakter ke titik terdekat pada rekaman
 local function startPathRecovery(forceTeleport)
     if recoveryActive or not currentPlaybackData or not playing then return end
     
@@ -231,63 +267,55 @@ local function startPathRecovery(forceTeleport)
     local nearestIdx, targetTime, distance = findNearestFrame(currentPos, currentPlaybackData)
     local targetPos = currentPlaybackData[nearestIdx].position
     
-    -- Jika force teleport diaktifkan (opsi dari user)
     if forceTeleport then
         hrp.CFrame = currentPlaybackData[nearestIdx].cframe
         hrp.AssemblyLinearVelocity = Vector3.zero
-        -- Sinkronkan waktu replay
         playbackStartTime = os.clock() - (targetTime / playbackSpeed)
         notif("Teleport ke jalur", "info")
         cancelRecovery()
         return
     end
     
-    -- Jika jarak terlalu jauh (> 150), tampilkan dialog
     if distance > 150 and not recoveryWaitingForUser then
         recoveryWaitingForUser = true
-        -- Jeda replay sementara
         local wasPlaying = playing
         if playing then
             playing = false
             if playbackThread then task.cancel(playbackThread) end
         end
         
-        local dialog = WindUI:Dialog({
-            Title = "Jarak terlalu jauh",
-            Description = string.format("Jarak ke jalur rekaman: %.1f studs. Pilih tindakan:", distance),
-            Buttons = {
-                {Text = "Pulihkan otomatis", Callback = function()
-                    recoveryWaitingForUser = false
-                    if wasPlaying then
-                        startPathRecovery(false)
-                    else
+        if WindUI and WindUI.Dialog then
+            local dialog = WindUI:Dialog({
+                Title = "Jarak terlalu jauh",
+                Description = string.format("Jarak ke jalur rekaman: %.1f studs. Pilih tindakan:", distance),
+                Buttons = {
+                    {Text = "Pulihkan otomatis", Callback = function()
+                        recoveryWaitingForUser = false
+                        if wasPlaying then startPathRecovery(false) else cancelRecovery() end
+                    end},
+                    {Text = "Batalkan Replay", Callback = function()
+                        recoveryWaitingForUser = false
+                        stopPlayback()
                         cancelRecovery()
-                    end
-                end},
-                {Text = "Batalkan Replay", Callback = function()
-                    recoveryWaitingForUser = false
-                    stopPlayback()
-                    cancelRecovery()
-                end},
-                {Text = "Teleport ke jalur", Callback = function()
-                    recoveryWaitingForUser = false
-                    if wasPlaying then
-                        startPathRecovery(true)
-                    else
-                        cancelRecovery()
-                    end
-                end}
-            }
-        })
+                    end},
+                    {Text = "Teleport ke jalur", Callback = function()
+                        recoveryWaitingForUser = false
+                        if wasPlaying then startPathRecovery(true) else cancelRecovery() end
+                    end}
+                }
+            })
+        else
+            -- Fallback: langsung teleport
+            recoveryWaitingForUser = false
+            startPathRecovery(true)
+        end
         return
     end
     
-    -- Jika jarak dekat, langsung koreksi dengan pathfinding
     recoveryActive = true
     humanoid.PlatformStand = true
     humanoid.AutoRotate = false
     
-    -- Buat path dari posisi sekarang ke target
     local path = pathfindingService:CreatePath({
         AgentRadius = 2,
         AgentHeight = 5,
@@ -295,28 +323,27 @@ local function startPathRecovery(forceTeleport)
         AgentMaxSlope = 45
     })
     
-    local success, errorMsg = pcall(function()
+    local success, err = pcall(function()
         path:ComputeAsync(currentPos, targetPos)
     end)
     
     if not success or path.Status ~= Enum.PathStatus.Success then
-        notif("Tidak dapat menemukan jalur ke rekaman, coba teleport", "error")
+        notif("Tidak dapat menemukan jalur, coba teleport", "error")
         recoveryActive = false
         humanoid.PlatformStand = false
         humanoid.AutoRotate = true
-        -- Tawarkan teleport
-        local dialog = WindUI:Dialog({
-            Title = "Jalur terhalang",
-            Description = "Pathfinding gagal. Teleport ke jalur terdekat?",
-            Buttons = {
-                {Text = "Teleport", Callback = function()
-                    startPathRecovery(true)
-                end},
-                {Text = "Batalkan", Callback = function()
-                    stopPlayback()
-                end}
-            }
-        })
+        if WindUI and WindUI.Dialog then
+            WindUI:Dialog({
+                Title = "Jalur terhalang",
+                Description = "Pathfinding gagal. Teleport ke jalur terdekat?",
+                Buttons = {
+                    {Text = "Teleport", Callback = function() startPathRecovery(true) end},
+                    {Text = "Batalkan", Callback = function() stopPlayback() end}
+                }
+            })
+        else
+            startPathRecovery(true)
+        end
         return
     end
     
@@ -330,42 +357,32 @@ local function startPathRecovery(forceTeleport)
     
     notif("Memulihkan jalur...", "info")
     
-    -- Gerakkan karakter mengikuti path
     recoveryThread = task.spawn(function()
         for i, waypoint in ipairs(waypoints) do
             if not recoveryActive then break end
             local targetWp = waypoint.Position
-            local distanceToWp = (hrp.Position - targetWp).Magnitude
-            if distanceToWp > 3 then
-                -- Gunakan tween atau BodyVelocity untuk pergerakan halus
-                local bodyVel = Instance.new("BodyVelocity")
-                bodyVel.MaxForce = Vector3.new(4000, 4000, 4000)
-                bodyVel.Velocity = (targetWp - hrp.Position).Unit * 16
-                bodyVel.Parent = hrp
-                
-                -- Tunggu sampai mendekati waypoint
-                repeat
-                    runService.RenderStepped:Wait()
-                    if not recoveryActive then break end
-                    local newDir = (targetWp - hrp.Position).Unit
-                    bodyVel.Velocity = newDir * 16
-                    -- Arahkan karakter menghadap target
-                    hrp.CFrame = CFrame.new(hrp.Position, targetWp)
-                until (hrp.Position - targetWp).Magnitude < 3 or not recoveryActive
-                
-                bodyVel:Destroy()
-            end
+            local bodyVel = Instance.new("BodyVelocity")
+            bodyVel.MaxForce = Vector3.new(4000, 4000, 4000)
+            bodyVel.Velocity = (targetWp - hrp.Position).Unit * 16
+            bodyVel.Parent = hrp
+            
+            repeat
+                runService.RenderStepped:Wait()
+                if not recoveryActive then break end
+                local newDir = (targetWp - hrp.Position).Unit
+                bodyVel.Velocity = newDir * 16
+                hrp.CFrame = CFrame.new(hrp.Position, targetWp)
+            until (hrp.Position - targetWp).Magnitude < 3 or not recoveryActive
+            
+            bodyVel:Destroy()
         end
         
         if recoveryActive then
-            -- Sampai di target, lanjutkan replay
             hrp.CFrame = currentPlaybackData[nearestIdx].cframe
             hrp.AssemblyLinearVelocity = Vector3.zero
-            -- Sinkronkan waktu playback
             playbackStartTime = os.clock() - (targetTime / playbackSpeed)
             notif("Kembali ke jalur, melanjutkan replay", "success")
             cancelRecovery()
-            -- Lanjutkan replay
             if currentPlaybackData then
                 startPlayback(currentPlaybackData, reverse, playbackSpeed, loopMode)
             end
@@ -373,7 +390,7 @@ local function startPathRecovery(forceTeleport)
     end)
 end
 
--- ========== PLAYBACK DENGAN INTERPOLASI DAN PATH RECOVERY ==========
+-- ========== PLAYBACK ==========
 local function stopPlayback()
     if playing then
         if playbackThread then task.cancel(playbackThread) end
@@ -433,7 +450,6 @@ local function startPlayback(data, isReverse, speed, loop)
             progress = math.clamp(progress, 0, 1)
             local targetTime = progress * totalTime
             
-            -- Cari frame dengan interpolasi
             local idx1, idx2
             for i = 1, #data-1 do
                 if data[i].time <= targetTime and data[i+1].time >= targetTime then
@@ -465,20 +481,18 @@ local function startPlayback(data, isReverse, speed, loop)
                 humanoid:MoveTo(hrp.Position)
             end
             
-            -- Simulasi lompat
             local isJumpingNow = alpha > 0.5 and f2.isJumping or f1.isJumping
             if isJumpingNow and not lastJump and humanoid.FloorMaterial ~= Enum.Material.Air then
                 humanoid.Jump = true
             end
             lastJump = isJumpingNow
             
-            -- Cek penyimpangan posisi setiap beberapa frame
+            -- Cek penyimpangan setiap 30 frame
             if math.random(1, 30) == 1 then
                 local currentPos = hrp.Position
                 local expectedPos = f1.position:Lerp(f2.position, alpha)
                 local deviation = (currentPos - expectedPos).Magnitude
                 if deviation > 15 and not recoveryActive then
-                    -- Mulai path recovery
                     startPathRecovery(false)
                     break
                 end
@@ -622,7 +636,6 @@ end)
 -- ========== TRAIL COLOR ==========
 local function setTrailColor(color)
     trailColor = color
-    -- Update warna semua part trail yang sudah ada
     for _, part in pairs(trailParts) do
         if part and part.Parent then
             part.BrickColor = BrickColor.new(trailColor)
@@ -631,6 +644,9 @@ local function setTrailColor(color)
 end
 
 -- ========== MEMBANGUN GUI DENGAN WINDUI ==========
+-- Tunggu sebentar agar player siap
+task.wait(1)
+
 local win = WindUI:Window({
     Title = "Renn HUB Universal - Motion Recorder Pro",
     SubTitle = "Dengan Path Recovery",
@@ -674,8 +690,7 @@ playGroup:Slider({
     Precision = 2
 }, function(value)
     playbackSpeed = value
-    -- Jika sedang playback, update kecepatan secara realtime
-    if playing and not recoveryActive then
+    if playing and not recoveryActive and currentPlaybackData then
         local wasPlaying = playing
         local wasReverse = reverse
         local wasLoop = loopMode
@@ -698,7 +713,6 @@ local saveTab = win:Tab("Saves")
 local saveGroup = saveTab:Group("Manajemen Rekaman", true)
 saveGroup:Button("Save Recording", function() saveCurrentRecordingManually() end)
 
--- Load dropdown
 local saveList = refreshSaveList()
 local loadDropdown = saveGroup:Dropdown({
     Title = "Load Recording",
@@ -732,7 +746,7 @@ local refreshSaveListCallback = function()
 end
 
 -- Tab 4: Visual & Player
-local visualTab = win:Tab("Visual")
+local visualTab = win:Tab("Visual & Player")
 local trailGroup = visualTab:Group("Trail", true)
 trailGroup:Toggle({
     Title = "Aktifkan Trail",
@@ -800,8 +814,8 @@ local aboutTab = win:Tab("About")
 local infoGroup = aboutTab:Group("Informasi Script", true)
 infoGroup:Label("Renn HUB Universal - Motion Recorder Pro")
 infoGroup:Label("Version 3.0 dengan Path Recovery")
-infoGroup:Label("Fitur: Rekam gerakan + lompat, Playback normal/reverse, Trail garis kontinu, Save/Load/Delete, Fly, Noclip, Jump High, God Mode")
-infoGroup:Label("Sistem pemulihan jalur otomatis jika karakter keluar dari replay")
+infoGroup:Label("Fitur lengkap: Rekam, Playback, Trail, Save/Load, Player mods")
+infoGroup:Label("Sistem pemulihan jalur otomatis jika karakter keluar")
 local upcomingGroup = aboutTab:Group("Fitur Mendatang", true)
 upcomingGroup:Label("✨ Speed Run Mode")
 upcomingGroup:Label("✨ Ghost Mode")
