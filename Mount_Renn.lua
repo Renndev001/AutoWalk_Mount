@@ -1,13 +1,15 @@
 --[[
     Renn HUB Universal - Motion Recorder Pro
-    Migrated to Obsidian UI Library (Based on Rayfield version audit)
-    All features preserved: 5 tabs, 10 buttons, 6 toggles, 3 sliders, 1 dropdown, 1 input, 1 color picker, 2 paragraphs
-    Includes: Recording, Playback with Path Recovery, Trail, Save/Load, Fly, Noclip, Jump High, God Mode
-    Respawn persistence, stable Fly/Noclip, natural path recovery
-]]
+    Rayfield UI Library (Stable Version)
+    All features preserved based on audit:
+    - 5 Tabs: Motion Recorder, Playback, Saves, Visual & Player, About
+    - 10 Buttons, 6 Toggles, 3 Sliders, 1 Dropdown, 1 Input, 1 ColorPicker, 2 Paragraphs
+    - Recording, Playback with Path Recovery, Trail, Save/Load, Fly, Noclip, Jump High, God Mode
+    - Respawn persistence, stable Fly/Noclip
+--]]
 
--- ========== LOAD OBSIDIAN UI ==========
-local Obsidian = loadstring(game:HttpGet("https://raw.githubusercontent.com/uhfork/Obsidian/refs/heads/main/Example.lua"))()
+-- ========== LOAD RAYFIELD ==========
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 -- ========== SERVICES ==========
 local Players = game:GetService("Players")
@@ -79,7 +81,7 @@ local godModeConnection = nil
 -- ========== UTILITY FUNCTIONS ==========
 local function showNotification(message, notificationType)
     local title = (notificationType == "error" and "Error") or (notificationType == "success" and "Success") or "Info"
-    Obsidian:Notify({
+    Rayfield:Notify({
         Title = title,
         Content = message,
         Duration = 2.5
@@ -235,35 +237,44 @@ local function initiatePathRecovery(forceTeleport)
             end
         end
 
-        Obsidian:Notify({
+        Rayfield:Notify({
             Title = "Distance Warning",
             Content = string.format("Distance to path: %.1f studs. Select an action:", distanceToPath),
-            Duration = 0,
+            Duration = 10,
             Actions = {
-                ["Recover"] = function()
-                    pathRecoveryPendingUserInput = false
-                    recoveryDialogShown = false
-                    if pausedPlaybackState then
-                        initiatePathRecovery(false)
-                    else
+                Recover = {
+                    Name = "Recover",
+                    Callback = function()
+                        pathRecoveryPendingUserInput = false
+                        recoveryDialogShown = false
+                        if pausedPlaybackState then
+                            initiatePathRecovery(false)
+                        else
+                            cancelPathRecovery()
+                        end
+                    end
+                },
+                Cancel = {
+                    Name = "Cancel",
+                    Callback = function()
+                        pathRecoveryPendingUserInput = false
+                        recoveryDialogShown = false
+                        stopPlayback()
                         cancelPathRecovery()
                     end
-                end,
-                ["Cancel"] = function()
-                    pathRecoveryPendingUserInput = false
-                    recoveryDialogShown = false
-                    stopPlayback()
-                    cancelPathRecovery()
-                end,
-                ["Teleport"] = function()
-                    pathRecoveryPendingUserInput = false
-                    recoveryDialogShown = false
-                    if pausedPlaybackState then
-                        initiatePathRecovery(true)
-                    else
-                        cancelPathRecovery()
+                },
+                Teleport = {
+                    Name = "Teleport",
+                    Callback = function()
+                        pathRecoveryPendingUserInput = false
+                        recoveryDialogShown = false
+                        if pausedPlaybackState then
+                            initiatePathRecovery(true)
+                        else
+                            cancelPathRecovery()
+                        end
                     end
-                end
+                }
             }
         })
         return
@@ -509,28 +520,28 @@ local function saveCurrentRecording()
         return
     end
 
-    Obsidian:Input({
+    local dialog = Rayfield:Input({
         Title = "Save Recording",
         Description = "Enter a name for this recording",
-        Placeholder = "Recording name",
-        Callback = function(inputName)
-            local name = (inputName and inputName ~= "") and inputName or "rec_" .. os.time()
-            local saveFolder = player:FindFirstChild(SAVE_FOLDER_NAME) or Instance.new("Folder", player)
-            saveFolder.Name = SAVE_FOLDER_NAME
-            local existingRecording = saveFolder:FindFirstChild(name)
-            if existingRecording then
-                existingRecording:Destroy()
-            end
-            local recordingValue = Instance.new("StringValue")
-            recordingValue.Name = name
-            recordingValue.Value = HttpService:JSONEncode({frames = recordedFrames, timestamp = os.time()})
-            recordingValue.Parent = saveFolder
-            showNotification("Saved as: " .. name, "success")
-            if refreshRecordingListCallback then
-                refreshRecordingListCallback()
-            end
-        end
+        Placeholder = "Recording name"
     })
+    dialog.OnSubmit = function(inputName)
+        local name = (inputName and inputName ~= "") and inputName or "rec_" .. os.time()
+        local saveFolder = player:FindFirstChild(SAVE_FOLDER_NAME) or Instance.new("Folder", player)
+        saveFolder.Name = SAVE_FOLDER_NAME
+        local existingRecording = saveFolder:FindFirstChild(name)
+        if existingRecording then
+            existingRecording:Destroy()
+        end
+        local recordingValue = Instance.new("StringValue")
+        recordingValue.Name = name
+        recordingValue.Value = HttpService:JSONEncode({frames = recordedFrames, timestamp = os.time()})
+        recordingValue.Parent = saveFolder
+        showNotification("Saved as: " .. name, "success")
+        if refreshRecordingListCallback then
+            refreshRecordingListCallback()
+        end
+    end
 end
 
 local function deleteRecording(recordingName)
@@ -722,19 +733,25 @@ RunService.RenderStepped:Connect(function()
     updateTrail()
 end)
 
--- ========== OBSIDIAN UI INITIALIZATION ==========
-local mainWindow = Obsidian:CreateWindow({
+-- ========== RAYFIELD UI INITIALIZATION ==========
+local mainWindow = Rayfield:CreateWindow({
     Name = "Renn HUB Universal - Motion Recorder Pro",
-    Size = "420x560",
-    Theme = "Dark",
-    ScriptVersion = "3.0",
     LoadingTitle = "Renn HUB",
-    LoadingSubtitle = "Motion Recorder Pro"
+    LoadingSubtitle = "Motion Recorder Pro",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "RennHUB",
+        FileName = "MotionRecorder"
+    },
+    Discord = {
+        Enabled = false
+    },
+    KeySystem = false
 })
 
 -- Tab 1: Motion Recorder
-local recordingTab = mainWindow:CreateTab("Motion Recorder")
-recordingTab:CreateSection("Recording Controls")
+local recordingTab = mainWindow:CreateTab("Motion Recorder", 4483362458)
+local recordingSection = recordingTab:CreateSection("Recording Controls")
 recordingTab:CreateButton({
     Name = "Start Record",
     Callback = startRecording
@@ -753,8 +770,8 @@ recordingTab:CreateButton({
 })
 
 -- Tab 2: Playback
-local playbackTab = mainWindow:CreateTab("Playback")
-playbackTab:CreateSection("Playback Controls")
+local playbackTab = mainWindow:CreateTab("Playback", 4483362458)
+local playbackSection = playbackTab:CreateSection("Playback Controls")
 playbackTab:CreateButton({
     Name = "Play Normal ▶",
     Callback = function()
@@ -781,11 +798,11 @@ playbackTab:CreateButton({
 })
 playbackTab:CreateSlider({
     Name = "Playback Speed",
-    Min = 0.25,
-    Max = 3,
+    Range = {0.25, 3},
     Increment = 0.05,
     Suffix = "x",
-    Default = 1,
+    CurrentValue = 1,
+    Flag = "PlaybackSpeed",
     Callback = function(value)
         playbackSpeed = value
         if playbackActive and not pathRecoveryActive and playbackData then
@@ -800,15 +817,16 @@ playbackTab:CreateSlider({
 })
 playbackTab:CreateToggle({
     Name = "Loop Mode",
-    Default = false,
+    CurrentValue = false,
+    Flag = "LoopMode",
     Callback = function(value)
         playbackLoop = value
     end
 })
 
 -- Tab 3: Saves
-local savesTab = mainWindow:CreateTab("Saves")
-savesTab:CreateSection("Save Management")
+local savesTab = mainWindow:CreateTab("Saves", 4483362458)
+local savesSection = savesTab:CreateSection("Save Management")
 savesTab:CreateButton({
     Name = "Save Current Recording",
     Callback = saveCurrentRecording
@@ -819,7 +837,8 @@ if #recordingsList == 0 then recordingsList = {"(empty)"} end
 local loadDropdown = savesTab:CreateDropdown({
     Name = "Load Recording",
     Options = recordingsList,
-    Default = recordingsList[1],
+    CurrentOption = recordingsList[1],
+    Flag = "LoadRecording",
     Callback = function(option)
         if option ~= "(empty)" then
             loadRecording(option)
@@ -827,9 +846,10 @@ local loadDropdown = savesTab:CreateDropdown({
     end
 })
 
-savesTab:CreateInput({
+local deleteInput = savesTab:CreateInput({
     Name = "Delete Recording",
-    Placeholder = "Recording name",
+    PlaceholderText = "Recording name",
+    RemoveTextAfterFocusLost = true,
     Callback = function(text)
         deleteRecording(text)
     end
@@ -841,7 +861,7 @@ savesTab:CreateButton({
         local newList = getSavedRecordingsList()
         if #newList == 0 then newList = {"(empty)"} end
         loadDropdown:SetOptions(newList)
-        loadDropdown:SetDefault(newList[1])
+        loadDropdown.CurrentOption = newList[1]
         showNotification("List refreshed", "info")
     end
 })
@@ -850,15 +870,16 @@ local refreshRecordingListCallback = function()
     local newList = getSavedRecordingsList()
     if #newList == 0 then newList = {"(empty)"} end
     loadDropdown:SetOptions(newList)
-    loadDropdown:SetDefault(newList[1])
+    loadDropdown.CurrentOption = newList[1]
 end
 
 -- Tab 4: Visual & Player
-local visualPlayerTab = mainWindow:CreateTab("Visual & Player")
-visualPlayerTab:CreateSection("Trail")
+local visualPlayerTab = mainWindow:CreateTab("Visual & Player", 4483362458)
+local trailSection = visualPlayerTab:CreateSection("Trail")
 visualPlayerTab:CreateToggle({
     Name = "Enable Trail",
-    Default = true,
+    CurrentValue = true,
+    Flag = "TrailEnabled",
     Callback = function(value)
         trailEnabled = value
         if not value then
@@ -868,7 +889,8 @@ visualPlayerTab:CreateToggle({
 })
 visualPlayerTab:CreateColorPicker({
     Name = "Trail Color",
-    Default = Color3.fromRGB(255, 50, 50),
+    Color = Color3.fromRGB(255, 50, 50),
+    Flag = "TrailColor",
     Callback = function(color)
         setTrailColor(color)
     end
@@ -878,10 +900,11 @@ visualPlayerTab:CreateButton({
     Callback = cleanupTrail
 })
 
-visualPlayerTab:CreateSection("Player Features")
+local playerSection = visualPlayerTab:CreateSection("Player Features")
 visualPlayerTab:CreateToggle({
     Name = "Fly Mode",
-    Default = false,
+    CurrentValue = false,
+    Flag = "FlyMode",
     Callback = function(value)
         if value then
             enableFly()
@@ -892,36 +915,38 @@ visualPlayerTab:CreateToggle({
 })
 visualPlayerTab:CreateSlider({
     Name = "Fly Speed",
-    Min = 1,
-    Max = 50,
+    Range = {1, 50},
     Increment = 1,
     Suffix = "studs/s",
-    Default = 16,
+    CurrentValue = 16,
+    Flag = "FlySpeed",
     Callback = function(value)
         flySpeed = value
     end
 })
 visualPlayerTab:CreateToggle({
     Name = "Noclip",
-    Default = false,
+    CurrentValue = false,
+    Flag = "Noclip",
     Callback = function(value)
         setNoclip(value)
     end
 })
 visualPlayerTab:CreateToggle({
     Name = "Jump High",
-    Default = false,
+    CurrentValue = false,
+    Flag = "JumpHigh",
     Callback = function(value)
         setJumpHigh(value)
     end
 })
 visualPlayerTab:CreateSlider({
     Name = "Jump Power",
-    Min = 20,
-    Max = 200,
+    Range = {20, 200},
     Increment = 5,
     Suffix = "",
-    Default = 50,
+    CurrentValue = 50,
+    Flag = "JumpPower",
     Callback = function(value)
         jumpHighPower = value
         if jumpHighEnabled then
@@ -931,20 +956,21 @@ visualPlayerTab:CreateSlider({
 })
 visualPlayerTab:CreateToggle({
     Name = "God Mode",
-    Default = false,
+    CurrentValue = false,
+    Flag = "GodMode",
     Callback = function(value)
         setGodMode(value)
     end
 })
 
 -- Tab 5: About
-local aboutTab = mainWindow:CreateTab("About")
-aboutTab:CreateSection("About")
+local aboutTab = mainWindow:CreateTab("About", 4483362458)
+local aboutSection = aboutTab:CreateSection("About")
 aboutTab:CreateParagraph({
     Title = "Renn HUB Universal - Motion Recorder Pro",
-    Content = "Version 3.0 with Obsidian UI\n\nAll original features preserved:\n- Recording with jump detection\n- Normal/Reverse playback\n- Continuous neon trail\n- Save/Load/Delete recordings\n- Smart Path Recovery System\n- Fly, Noclip, Jump High, God Mode"
+    Content = "Version 3.0 with Rayfield UI\n\nAll original features preserved:\n- Recording with jump detection\n- Normal/Reverse playback\n- Continuous neon trail\n- Save/Load/Delete recordings\n- Smart Path Recovery System\n- Fly, Noclip, Jump High, God Mode"
 })
-aboutTab:CreateSection("Upcoming Features")
+local upcomingSection = aboutTab:CreateSection("Upcoming Features")
 aboutTab:CreateParagraph({
     Title = "Planned Features",
     Content = "✨ Speed Run Mode\n✨ Ghost Mode\n✨ Auto Record on Death\n✨ Export/Import recordings"
