@@ -1,12 +1,8 @@
 --[[
     Renn HUB Universal - Motion Recorder Pro
-    Rayfield UI Library (Stable Version)
-    All features preserved based on audit:
-    - 5 Tabs: Motion Recorder, Playback, Saves, Visual & Player, About
-    - 10 Buttons, 6 Toggles, 3 Sliders, 1 Dropdown, 1 Input, 1 ColorPicker, 2 Paragraphs
-    - Recording, Playback with Path Recovery, Trail, Save/Load, Fly, Noclip, Jump High, God Mode
-    - Respawn persistence, stable Fly/Noclip
---]]
+    Rayfield UI Library with custom resize and minimize
+    Added: resize handle (bottom-right), minimize button, proper drag behavior after minimize
+]]
 
 -- ========== LOAD RAYFIELD ==========
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -975,5 +971,134 @@ aboutTab:CreateParagraph({
     Title = "Planned Features",
     Content = "✨ Speed Run Mode\n✨ Ghost Mode\n✨ Auto Record on Death\n✨ Export/Import recordings"
 })
+
+-- ========== CUSTOM RESIZE & MINIMIZE FUNCTIONALITY ==========
+task.wait(0.5) -- Wait for Rayfield to fully create GUI
+
+local rayfieldScreenGui = player.PlayerGui:FindFirstChild("Rayfield")
+if rayfieldScreenGui then
+    local mainFrame = rayfieldScreenGui:FindFirstChild("Main")
+    if mainFrame then
+        -- Set initial size (less wide)
+        mainFrame.Size = UDim2.new(0, 380, 0, 520)
+        mainFrame.Position = UDim2.new(0.5, -190, 0.5, -260)
+        
+        -- Variables for resizing
+        local resizing = false
+        local startMousePos, startSize
+        
+        -- Create resize handle (bottom-right corner)
+        local resizeHandle = Instance.new("Frame")
+        resizeHandle.Size = UDim2.new(0, 15, 0, 15)
+        resizeHandle.Position = UDim2.new(1, -15, 1, -15)
+        resizeHandle.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+        resizeHandle.BackgroundTransparency = 0.5
+        resizeHandle.BorderSizePixel = 0
+        resizeHandle.Parent = mainFrame
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 2)
+        corner.Parent = resizeHandle
+        
+        -- Resize logic
+        local function startResize(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                resizing = true
+                startMousePos = input.Position
+                startSize = mainFrame.AbsoluteSize
+                
+                local moveConn, upConn
+                moveConn = UserInputService.InputChanged:Connect(function(inp)
+                    if resizing and (inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch) then
+                        local delta = inp.Position - startMousePos
+                        local newWidth = math.clamp(startSize.X + delta.X, 350, 700)
+                        local newHeight = math.clamp(startSize.Y + delta.Y, 400, 700)
+                        mainFrame.Size = UDim2.new(0, newWidth, 0, newHeight)
+                    end
+                end)
+                
+                upConn = UserInputService.InputEnded:Connect(function(inp)
+                    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+                        resizing = false
+                        moveConn:Disconnect()
+                        upConn:Disconnect()
+                    end
+                end)
+            end
+        end
+        
+        resizeHandle.InputBegan:Connect(startResize)
+        
+        -- Create minimize button if not exists
+        local titleBar = mainFrame:FindFirstChild("Top")
+        if titleBar then
+            local minimizeBtn = Instance.new("TextButton")
+            minimizeBtn.Size = UDim2.new(0, 35, 0, 35)
+            minimizeBtn.Position = UDim2.new(1, -70, 0, 0)
+            minimizeBtn.BackgroundTransparency = 1
+            minimizeBtn.Text = "−"
+            minimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            minimizeBtn.Font = Enum.Font.GothamBold
+            minimizeBtn.TextSize = 24
+            minimizeBtn.Parent = titleBar
+            
+            local minimized = false
+            local originalSize = mainFrame.Size
+            local originalContentVisible = true
+            
+            minimizeBtn.MouseButton1Click:Connect(function()
+                minimized = not minimized
+                if minimized then
+                    -- Store current size and hide content
+                    originalSize = mainFrame.Size
+                    local contentFrame = mainFrame:FindFirstChild("Content")
+                    if contentFrame then
+                        contentFrame.Visible = false
+                    end
+                    -- Resize to title bar only
+                    mainFrame.Size = UDim2.new(originalSize.X.Scale, originalSize.X.Offset, 0, 40)
+                    -- Hide resize handle when minimized
+                    resizeHandle.Visible = false
+                else
+                    -- Restore
+                    local contentFrame = mainFrame:FindFirstChild("Content")
+                    if contentFrame then
+                        contentFrame.Visible = true
+                    end
+                    mainFrame.Size = originalSize
+                    resizeHandle.Visible = true
+                end
+            end)
+            
+            -- Make title bar draggable (override Rayfield's drag to work after minimize)
+            local dragging = false
+            local dragStart, dragStartPos
+            
+            titleBar.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    dragging = true
+                    dragStart = input.Position
+                    dragStartPos = mainFrame.Position
+                    
+                    local moveConn, upConn
+                    moveConn = UserInputService.InputChanged:Connect(function(inp)
+                        if dragging and (inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch) then
+                            local delta = inp.Position - dragStart
+                            mainFrame.Position = UDim2.new(dragStartPos.X.Scale, dragStartPos.X.Offset + delta.X, dragStartPos.Y.Scale, dragStartPos.Y.Offset + delta.Y)
+                        end
+                    end)
+                    
+                    upConn = UserInputService.InputEnded:Connect(function(inp)
+                        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+                            dragging = false
+                            moveConn:Disconnect()
+                            upConn:Disconnect()
+                        end
+                    end)
+                end
+            end)
+        end
+    end
+end
 
 showNotification("Renn HUB Universal - Motion Recorder Pro is ready!", "success")
