@@ -1,12 +1,13 @@
 --[[
     Renn HUB Universal - Motion Recorder Pro
-    Refactored with Rayfield UI Library
-    All original features preserved: Recording, Playback (with Path Recovery), Trail, Save/Load, Player Features
+    Refactored with Obsidian UI Library
+    All features preserved: Recording, Playback (with smart path recovery), Trail, Save/Load, Player Features
     Enhanced stability for Fly, Noclip, and respawn persistence.
+    No forced teleportation during playback deviation - uses natural movement recovery.
 ]]
 
--- ========== LOAD RAYFIELD ==========
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+-- ========== LOAD OBSIDIAN UI ==========
+local Obsidian = loadstring(game:HttpGet("https://raw.githubusercontent.com/uhfork/Obsidian/refs/heads/main/Example.lua"))()
 
 -- ========== SERVICES ==========
 local Players = game:GetService("Players")
@@ -47,6 +48,7 @@ local pausedPlaybackState = false
 local pausedPlaybackReverse = false
 local pausedPlaybackSpeed = 1.0
 local pausedPlaybackLoop = false
+local recoveryDialogShown = false
 
 -- ========== TRAIL GLOBALS ==========
 local trailParts = {}
@@ -65,17 +67,19 @@ local flyConnection = nil
 
 local noclipEnabled = false
 local originalCollisionStates = {}
+local noclipConnection = nil
 
 local jumpPowerDefault = humanoid.JumpPower
 local jumpHighEnabled = false
 local jumpHighPower = 50
 
 local godModeEnabled = false
+local godModeConnection = nil
 
 -- ========== UTILITY FUNCTIONS ==========
 local function showNotification(message, notificationType)
     local title = (notificationType == "error" and "Error") or (notificationType == "success" and "Success") or "Info"
-    Rayfield:Notify({
+    Obsidian:Notify({
         Title = title,
         Content = message,
         Duration = 2.5
@@ -193,6 +197,7 @@ local function cancelPathRecovery()
     end
     pathRecoveryActive = false
     pathRecoveryPendingUserInput = false
+    recoveryDialogShown = false
     humanoid.PlatformStand = false
     humanoid.AutoRotate = true
     if humanoidRootPart:FindFirstChild("BodyVelocity") then
@@ -216,7 +221,9 @@ local function initiatePathRecovery(forceTeleport)
         return
     end
 
-    if distanceToPath > 150 and not pathRecoveryPendingUserInput then
+    -- If distance is too large and we haven't shown a dialog yet
+    if distanceToPath > 150 and not recoveryDialogShown then
+        recoveryDialogShown = true
         pathRecoveryPendingUserInput = true
         pausedPlaybackState = playbackActive
         pausedPlaybackReverse = playbackReverse
@@ -229,46 +236,42 @@ local function initiatePathRecovery(forceTeleport)
             end
         end
 
-        Rayfield:Notify({
+        -- Create a dialog with options using Obsidian's notification with actions
+        Obsidian:Notify({
             Title = "Distance Warning",
             Content = string.format("Distance to path: %.1f studs. Select an action:", distanceToPath),
-            Duration = 10,
+            Duration = 0, -- Persistent until action
             Actions = {
-                Recover = {
-                    Name = "Recover",
-                    Callback = function()
-                        pathRecoveryPendingUserInput = false
-                        if pausedPlaybackState then
-                            initiatePathRecovery(false)
-                        else
-                            cancelPathRecovery()
-                        end
-                    end
-                },
-                Cancel = {
-                    Name = "Cancel",
-                    Callback = function()
-                        pathRecoveryPendingUserInput = false
-                        stopPlayback()
+                ["Recover"] = function()
+                    pathRecoveryPendingUserInput = false
+                    recoveryDialogShown = false
+                    if pausedPlaybackState then
+                        initiatePathRecovery(false)
+                    else
                         cancelPathRecovery()
                     end
-                },
-                Teleport = {
-                    Name = "Teleport",
-                    Callback = function()
-                        pathRecoveryPendingUserInput = false
-                        if pausedPlaybackState then
-                            initiatePathRecovery(true)
-                        else
-                            cancelPathRecovery()
-                        end
+                end,
+                ["Cancel"] = function()
+                    pathRecoveryPendingUserInput = false
+                    recoveryDialogShown = false
+                    stopPlayback()
+                    cancelPathRecovery()
+                end,
+                ["Teleport"] = function()
+                    pathRecoveryPendingUserInput = false
+                    recoveryDialogShown = false
+                    if pausedPlaybackState then
+                        initiatePathRecovery(true)
+                    else
+                        cancelPathRecovery()
                     end
-                }
+                end
             }
         })
         return
     end
 
+    -- Small distance, recover naturally using pathfinding
     pathRecoveryActive = true
     humanoid.PlatformStand = true
     humanoid.AutoRotate = false
@@ -448,7 +451,7 @@ local function startPlayback(frameData, isReverse, speed, loop)
             end
             lastJumpState = isJumping
 
-            -- Periodic deviation check
+            -- Periodic deviation check (every ~1 second)
             if math.random(1, 30) == 1 then
                 local currentPosition = humanoidRootPart.Position
                 local expectedPosition = frame1.position:Lerp(frame2.position, alpha)
@@ -510,28 +513,29 @@ local function saveCurrentRecording()
         return
     end
 
-    local dialog = Rayfield:Input({
+    -- Use Obsidian input dialog
+    Obsidian:Input({
         Title = "Save Recording",
         Description = "Enter a name for this recording",
-        Placeholder = "Recording name"
+        Placeholder = "Recording name",
+        Callback = function(inputName)
+            local name = (inputName and inputName ~= "") and inputName or "rec_" .. os.time()
+            local saveFolder = player:FindFirstChild(SAVE_FOLDER_NAME) or Instance.new("Folder", player)
+            saveFolder.Name = SAVE_FOLDER_NAME
+            local existingRecording = saveFolder:FindFirstChild(name)
+            if existingRecording then
+                existingRecording:Destroy()
+            end
+            local recordingValue = Instance.new("StringValue")
+            recordingValue.Name = name
+            recordingValue.Value = HttpService:JSONEncode({frames = recordedFrames, timestamp = os.time()})
+            recordingValue.Parent = saveFolder
+            showNotification("Saved as: " .. name, "success")
+            if refreshRecordingListCallback then
+                refreshRecordingListCallback()
+            end
+        end
     })
-    dialog.OnSubmit = function(inputName)
-        local name = inputName ~= "" and inputName or "rec_" .. os.time()
-        local saveFolder = player:FindFirstChild(SAVE_FOLDER_NAME) or Instance.new("Folder", player)
-        saveFolder.Name = SAVE_FOLDER_NAME
-        local existingRecording = saveFolder:FindFirstChild(name)
-        if existingRecording then
-            existingRecording:Destroy()
-        end
-        local recordingValue = Instance.new("StringValue")
-        recordingValue.Name = name
-        recordingValue.Value = HttpService:JSONEncode({frames = recordedFrames, timestamp = os.time()})
-        recordingValue.Parent = saveFolder
-        showNotification("Saved as: " .. name, "success")
-        if refreshRecordingListCallback then
-            refreshRecordingListCallback()
-        end
-    end
 end
 
 local function deleteRecording(recordingName)
@@ -617,6 +621,26 @@ end
 local function setNoclip(state)
     noclipEnabled = state
     updateNoclip()
+    -- Also connect to descendant added/removed events for dynamic parts
+    if noclipConnection then noclipConnection:Disconnect() end
+    if state then
+        noclipConnection = character.DescendantAdded:Connect(function(desc)
+            if desc:IsA("BasePart") and desc.CanCollide then
+                originalCollisionStates[desc] = desc.CanCollide
+                desc.CanCollide = false
+            end
+        end)
+        character.DescendantRemoving:Connect(function(desc)
+            if desc:IsA("BasePart") then
+                originalCollisionStates[desc] = nil
+            end
+        end)
+    else
+        if noclipConnection then
+            noclipConnection:Disconnect()
+            noclipConnection = nil
+        end
+    end
 end
 
 -- ========== JUMP HIGH ==========
@@ -633,18 +657,22 @@ local function setGodMode(state)
         humanoid.MaxHealth = math.huge
         humanoid.BreakJointsOnDeath = false
         humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+        if godModeConnection then godModeConnection:Disconnect() end
+        godModeConnection = humanoid.HealthChanged:Connect(function()
+            if godModeEnabled and humanoid.Health <= 0 then
+                humanoid.Health = math.huge
+            end
+        end)
     else
         humanoid.MaxHealth = 100
         humanoid.Health = 100
         humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+        if godModeConnection then
+            godModeConnection:Disconnect()
+            godModeConnection = nil
+        end
     end
 end
-
-humanoid.HealthChanged:Connect(function()
-    if godModeEnabled and humanoid.Health <= 0 then
-        humanoid.Health = math.huge
-    end
-end)
 
 -- ========== CHARACTER RESPAWN HANDLER ==========
 local function onCharacterAdded(newCharacter)
@@ -654,21 +682,26 @@ local function onCharacterAdded(newCharacter)
 
     jumpPowerDefault = humanoid.JumpPower
 
+    -- Restore fly if it was enabled
     if flyEnabled then
         disableFly()
         enableFly()
     end
+    -- Restore noclip if it was enabled (reinitialize)
     if noclipEnabled then
         originalCollisionStates = {}
-        updateNoclip()
+        setNoclip(true)
     end
+    -- Restore jump high
     if jumpHighEnabled then
         setJumpHigh(true)
     end
+    -- Restore god mode
     if godModeEnabled then
         setGodMode(true)
     end
 
+    -- Clear trail to avoid old parts
     cleanupTrail()
 end
 
@@ -700,25 +733,19 @@ RunService.RenderStepped:Connect(function()
     updateTrail()
 end)
 
--- ========== RAYFIELD UI INITIALIZATION ==========
-local mainWindow = Rayfield:CreateWindow({
+-- ========== OBSIDIAN UI INITIALIZATION ==========
+local mainWindow = Obsidian:CreateWindow({
     Name = "Renn HUB Universal - Motion Recorder Pro",
+    Size = "380x520",
+    Theme = "Dark",
+    ScriptVersion = "3.0",
     LoadingTitle = "Renn HUB",
-    LoadingSubtitle = "Motion Recorder Pro",
-    ConfigurationSaving = {
-        Enabled = true,
-        FolderName = "RennHUB",
-        FileName = "MotionRecorder"
-    },
-    Discord = {
-        Enabled = false
-    },
-    KeySystem = false
+    LoadingSubtitle = "Motion Recorder Pro"
 })
 
 -- Tab: Motion Recorder
-local recordingTab = mainWindow:CreateTab("Motion Recorder", 4483362458)
-local recordingSection = recordingTab:CreateSection("Recording Controls")
+local recordingTab = mainWindow:CreateTab("Motion Recorder")
+recordingTab:CreateSection("Recording Controls")
 recordingTab:CreateButton({
     Name = "Start Record",
     Callback = startRecording
@@ -737,8 +764,8 @@ recordingTab:CreateButton({
 })
 
 -- Tab: Playback
-local playbackTab = mainWindow:CreateTab("Playback", 4483362458)
-local playbackSection = playbackTab:CreateSection("Playback Controls")
+local playbackTab = mainWindow:CreateTab("Playback")
+playbackTab:CreateSection("Playback Controls")
 playbackTab:CreateButton({
     Name = "Play Normal ▶",
     Callback = function()
@@ -765,11 +792,11 @@ playbackTab:CreateButton({
 })
 playbackTab:CreateSlider({
     Name = "Playback Speed",
-    Range = {0.25, 3},
+    Min = 0.25,
+    Max = 3,
     Increment = 0.05,
     Suffix = "x",
-    CurrentValue = 1,
-    Flag = "PlaybackSpeed",
+    Default = 1,
     Callback = function(value)
         playbackSpeed = value
         if playbackActive and not pathRecoveryActive and playbackData then
@@ -784,69 +811,71 @@ playbackTab:CreateSlider({
 })
 playbackTab:CreateToggle({
     Name = "Loop Mode",
-    CurrentValue = false,
-    Flag = "LoopMode",
+    Default = false,
     Callback = function(value)
         playbackLoop = value
     end
 })
 
 -- Tab: Saves
-local savesTab = mainWindow:CreateTab("Saves", 4483362458)
-local savesSection = savesTab:CreateSection("Save Management")
+local savesTab = mainWindow:CreateTab("Saves")
+savesTab:CreateSection("Save Management")
 savesTab:CreateButton({
     Name = "Save Current Recording",
     Callback = saveCurrentRecording
 })
 
-local recordingDropdown = nil
-local function refreshRecordingList()
-    local recordings = getSavedRecordingsList()
-    if #recordings == 0 then
-        recordings = {"(empty)"}
-    end
-    if recordingDropdown then
-        recordingDropdown:SetValues(recordings)
-        recordingDropdown.CurrentOption = recordings[1]
-    else
-        recordingDropdown = savesTab:CreateDropdown({
-            Name = "Load Recording",
-            Options = recordings,
-            CurrentOption = recordings[1],
-            Flag = "LoadRecording",
-            Callback = function(option)
-                if option ~= "(empty)" then
-                    loadRecording(option)
-                end
-            end
-        })
-    end
+-- Dropdown for loading recordings (dynamic)
+local recordingsList = getSavedRecordingsList()
+if #recordingsList == 0 then
+    recordingsList = {"(empty)"}
 end
-refreshRecordingList()
+local loadDropdown = savesTab:CreateDropdown({
+    Name = "Load Recording",
+    Options = recordingsList,
+    Default = recordingsList[1],
+    Callback = function(option)
+        if option ~= "(empty)" then
+            loadRecording(option)
+        end
+    end
+})
 
-local deleteInput = savesTab:CreateInput({
+-- Input for delete
+savesTab:CreateInput({
     Name = "Delete Recording",
-    PlaceholderText = "Recording name",
-    RemoveTextAfterFocusLost = true,
+    Placeholder = "Recording name",
     Callback = function(text)
         deleteRecording(text)
     end
 })
 
+-- Refresh button
 savesTab:CreateButton({
     Name = "Refresh List",
-    Callback = refreshRecordingList
+    Callback = function()
+        local newList = getSavedRecordingsList()
+        if #newList == 0 then newList = {"(empty)"} end
+        loadDropdown:SetOptions(newList)
+        loadDropdown:SetDefault(newList[1])
+        showNotification("List refreshed", "info")
+    end
 })
 
-local refreshRecordingListCallback = refreshRecordingList
+-- Global callback for refreshing from save/delete
+local refreshRecordingListCallback = function()
+    local newList = getSavedRecordingsList()
+    if #newList == 0 then newList = {"(empty)"} end
+    loadDropdown:SetOptions(newList)
+    loadDropdown:SetDefault(newList[1])
+end
 
 -- Tab: Visual & Player
-local visualPlayerTab = mainWindow:CreateTab("Visual & Player", 4483362458)
-local trailSection = visualPlayerTab:CreateSection("Trail")
+local visualPlayerTab = mainWindow:CreateTab("Visual & Player")
+visualPlayerTab:CreateSection("Trail")
 visualPlayerTab:CreateToggle({
     Name = "Enable Trail",
-    CurrentValue = true,
-    Flag = "TrailEnabled",
+    Default = true,
     Callback = function(value)
         trailEnabled = value
         if not value then
@@ -856,8 +885,7 @@ visualPlayerTab:CreateToggle({
 })
 visualPlayerTab:CreateColorPicker({
     Name = "Trail Color",
-    Color = Color3.fromRGB(255, 50, 50),
-    Flag = "TrailColor",
+    Default = Color3.fromRGB(255, 50, 50),
     Callback = function(color)
         setTrailColor(color)
     end
@@ -867,11 +895,10 @@ visualPlayerTab:CreateButton({
     Callback = cleanupTrail
 })
 
-local playerSection = visualPlayerTab:CreateSection("Player Features")
+visualPlayerTab:CreateSection("Player Features")
 visualPlayerTab:CreateToggle({
     Name = "Fly Mode",
-    CurrentValue = false,
-    Flag = "FlyMode",
+    Default = false,
     Callback = function(value)
         if value then
             enableFly()
@@ -882,38 +909,36 @@ visualPlayerTab:CreateToggle({
 })
 visualPlayerTab:CreateSlider({
     Name = "Fly Speed",
-    Range = {1, 50},
+    Min = 1,
+    Max = 50,
     Increment = 1,
     Suffix = "studs/s",
-    CurrentValue = 16,
-    Flag = "FlySpeed",
+    Default = 16,
     Callback = function(value)
         flySpeed = value
     end
 })
 visualPlayerTab:CreateToggle({
     Name = "Noclip",
-    CurrentValue = false,
-    Flag = "Noclip",
+    Default = false,
     Callback = function(value)
         setNoclip(value)
     end
 })
 visualPlayerTab:CreateToggle({
     Name = "Jump High",
-    CurrentValue = false,
-    Flag = "JumpHigh",
+    Default = false,
     Callback = function(value)
         setJumpHigh(value)
     end
 })
 visualPlayerTab:CreateSlider({
     Name = "Jump Power",
-    Range = {20, 200},
+    Min = 20,
+    Max = 200,
     Increment = 5,
     Suffix = "",
-    CurrentValue = 50,
-    Flag = "JumpPower",
+    Default = 50,
     Callback = function(value)
         jumpHighPower = value
         if jumpHighEnabled then
@@ -923,24 +948,24 @@ visualPlayerTab:CreateSlider({
 })
 visualPlayerTab:CreateToggle({
     Name = "God Mode",
-    CurrentValue = false,
-    Flag = "GodMode",
+    Default = false,
     Callback = function(value)
         setGodMode(value)
     end
 })
 
 -- Tab: About
-local aboutTab = mainWindow:CreateTab("About", 4483362458)
-local aboutSection = aboutTab:CreateSection("About")
+local aboutTab = mainWindow:CreateTab("About")
+aboutTab:CreateSection("About")
 aboutTab:CreateParagraph({
     Title = "Renn HUB Universal - Motion Recorder Pro",
-    Content = "Version 3.0 with Rayfield UI\n\nAll original features preserved:\n- Recording with jump detection\n- Normal/Reverse playback\n- Continuous neon trail\n- Save/Load/Delete recordings\n- Path Recovery System\n- Fly, Noclip, Jump High, God Mode"
+    Content = "Version 3.0 with Obsidian UI\n\nAll original features preserved:\n- Recording with jump detection\n- Normal/Reverse playback\n- Continuous neon trail\n- Save/Load/Delete recordings\n- Smart Path Recovery System\n- Fly, Noclip, Jump High, God Mode"
 })
-local upcomingSection = aboutTab:CreateSection("Upcoming Features")
+aboutTab:CreateSection("Upcoming Features")
 aboutTab:CreateParagraph({
     Title = "Planned Features",
     Content = "✨ Speed Run Mode\n✨ Ghost Mode\n✨ Auto Record on Death\n✨ Export/Import recordings"
 })
 
+-- Initial notification
 showNotification("Renn HUB Universal - Motion Recorder Pro is ready!", "success")
