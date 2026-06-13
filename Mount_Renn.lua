@@ -1,15 +1,13 @@
 --[[
-    Advanced Motion Recorder (Complete Edition) - Rayfield UI
+    Advanced Motion Recorder (Rayfield-like UI) - No External Library
+    Fitur lengkap:
     - Rekam CFrame, Velocity, MoveDirection, lompatan
-    - Playback normal/reverse + speed slider + loop mode
-    - Save/Load rekaman ke file (DataStore simulasi dengan HttpService)
-    - Export/Import JSON via clipboard
-    - Visual trail neon (garis jejak)
-    - Indikator status di layar
+    - Playback dengan speed, loop, reverse
+    - Visual trail neon
+    - Save/Load (disimpan di player)
+    - Export/Import JSON (clipboard & paste)
+    - GUI mirip Rayfield (Window, Tab, Section, dll)
 --]]
-
--- Load Rayfield
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local player = game.Players.LocalPlayer
 local char = player.Character or player.CharacterAdded:Wait()
@@ -33,97 +31,504 @@ local playbackSpeed = 1.0
 local loopMode = false
 local stopPlaybackFlag = false
 
--- Trail visual
-local trailParts = {} -- table of parts (balls or beams)
+-- Trail
+local trailParts = {}
 local trailActive = false
-local trailColor = Color3.fromRGB(0, 255, 255) -- neon cyan
-local trailInterval = 0.3 -- detik antar titik jejak
+local trailColor = Color3.fromRGB(0, 255, 255)
+local trailInterval = 0.3
 local trailTimer = 0
 
--- Indikator UI (teks di layar)
+-- Status indikator
 local statusLabel = nil
 
--- Nama file untuk menyimpan rekaman (simulasi DataStore)
+-- Save system
 local SAVE_FOLDER = "MotionRecorderSaves"
 local currentSaveName = "default"
 
--- ========== FUNGSI NOTIFIKASI ==========
+-- ========== GUI ELEMENTS ==========
+local gui = Instance.new("ScreenGui")
+gui.Name = "MotionRecorderGUI"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+-- Window utama
+local window = Instance.new("Frame")
+window.Size = UDim2.new(0, 450, 0, 500)
+window.Position = UDim2.new(0.5, -225, 0.5, -250)
+window.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+window.BorderSizePixel = 0
+window.ClipsDescendants = true
+window.Parent = gui
+-- Agar bisa drag
+window.Active = true
+window.Draggable = true
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = window
+
+-- Title bar
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 35)
+titleBar.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = window
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 8)
+titleCorner.Parent = titleBar
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, 0, 1, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "🎥 Motion Recorder Pro"
+titleLabel.TextColor3 = Color3.new(1,1,1)
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 16
+titleLabel.Parent = titleBar
+
+-- Close button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 30, 1, 0)
+closeBtn.Position = UDim2.new(1, -30, 0, 0)
+closeBtn.BackgroundTransparency = 1
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = Color3.new(1,1,1)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 16
+closeBtn.Parent = titleBar
+closeBtn.MouseButton1Click:Connect(function()
+    gui.Enabled = false
+end)
+
+-- Tab container
+local tabContainer = Instance.new("Frame")
+tabContainer.Size = UDim2.new(1, 0, 0, 40)
+tabContainer.Position = UDim2.new(0, 0, 0, 35)
+tabContainer.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+tabContainer.BorderSizePixel = 0
+tabContainer.Parent = window
+
+-- Content container (tempat tab pages)
+local contentContainer = Instance.new("Frame")
+contentContainer.Size = UDim2.new(1, 0, 1, -75)
+contentContainer.Position = UDim2.new(0, 0, 0, 75)
+contentContainer.BackgroundTransparency = 1
+contentContainer.Parent = window
+
+local pages = {} -- {tabName = frame}
+local activeTab = nil
+
+-- Fungsi membuat tab
+local function createTab(tabName)
+    local tabBtn = Instance.new("TextButton")
+    tabBtn.Size = UDim2.new(0, 100, 1, 0)
+    tabBtn.BackgroundTransparency = 1
+    tabBtn.Text = tabName
+    tabBtn.TextColor3 = Color3.fromRGB(200,200,200)
+    tabBtn.Font = Enum.Font.GothamSemibold
+    tabBtn.TextSize = 14
+    tabBtn.Parent = tabContainer
+    
+    local page = Instance.new("ScrollingFrame")
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 6
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.Parent = contentContainer
+    page.Visible = false
+    
+    -- Layout untuk page
+    local uiList = Instance.new("UIListLayout")
+    uiList.Padding = UDim.new(0, 10)
+    uiList.SortOrder = Enum.SortOrder.LayoutOrder
+    uiList.Parent = page
+    uiList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        page.CanvasSize = UDim2.new(0, 0, 0, uiList.AbsoluteContentSize.Y + 20)
+    end)
+    
+    pages[tabName] = {btn = tabBtn, page = page}
+    
+    tabBtn.MouseButton1Click:Connect(function()
+        for _, p in pairs(pages) do
+            p.page.Visible = false
+            p.btn.TextColor3 = Color3.fromRGB(200,200,200)
+        end
+        page.Visible = true
+        tabBtn.TextColor3 = Color3.fromRGB(255,255,255)
+        activeTab = tabName
+    end)
+    
+    if next(pages) == nil then
+        tabBtn.MouseButton1Click:Fire()
+    end
+    
+    return page
+end
+
+-- Fungsi membuat section (header)
+local function createSection(parent, title)
+    local section = Instance.new("Frame")
+    section.Size = UDim2.new(1, -20, 0, 30)
+    section.BackgroundTransparency = 1
+    section.Parent = parent
+    
+    local line = Instance.new("Frame")
+    line.Size = UDim2.new(1, 0, 0, 2)
+    line.Position = UDim2.new(0, 0, 0, 20)
+    line.BackgroundColor3 = Color3.fromRGB(80,80,90)
+    line.Parent = section
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0, 200, 0, 20)
+    label.BackgroundTransparency = 1
+    label.Text = title
+    label.TextColor3 = Color3.fromRGB(255,200,100)
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = section
+    
+    return section
+end
+
+-- Fungsi membuat button
+local function createButton(parent, text, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -20, 0, 35)
+    btn.BackgroundColor3 = Color3.fromRGB(60,60,70)
+    btn.Text = text
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.Font = Enum.Font.GothamSemibold
+    btn.TextSize = 14
+    btn.Parent = parent
+    local cornerBtn = Instance.new("UICorner")
+    cornerBtn.CornerRadius = UDim.new(0, 6)
+    cornerBtn.Parent = btn
+    btn.MouseButton1Click:Connect(callback)
+    return btn
+end
+
+-- Fungsi membuat slider
+local function createSlider(parent, name, minVal, maxVal, inc, default, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -20, 0, 60)
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 0, 20)
+    label.BackgroundTransparency = 1
+    label.Text = name .. ": " .. tostring(default)
+    label.TextColor3 = Color3.new(1,1,1)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 13
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
+    
+    local slider = Instance.new("Frame")
+    slider.Size = UDim2.new(1, 0, 0, 4)
+    slider.Position = UDim2.new(0, 0, 0, 25)
+    slider.BackgroundColor3 = Color3.fromRGB(80,80,90)
+    slider.Parent = frame
+    local sliderCorner = Instance.new("UICorner")
+    sliderCorner.CornerRadius = UDim.new(0, 2)
+    sliderCorner.Parent = slider
+    
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new((default - minVal)/(maxVal - minVal), 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(100,150,250)
+    fill.BorderSizePixel = 0
+    fill.Parent = slider
+    local fillCorner = Instance.new("UICorner")
+    fillCorner.CornerRadius = UDim.new(0, 2)
+    fillCorner.Parent = fill
+    
+    local knob = Instance.new("TextButton")
+    knob.Size = UDim2.new(0, 16, 0, 16)
+    knob.Position = UDim2.new((default - minVal)/(maxVal - minVal), -8, -0.5, 0)
+    knob.BackgroundColor3 = Color3.fromRGB(255,255,255)
+    knob.Text = ""
+    knob.Parent = slider
+    local knobCorner = Instance.new("UICorner")
+    knobCorner.CornerRadius = UDim.new(1, 0)
+    knobCorner.Parent = knob
+    
+    local value = default
+    local dragging = false
+    
+    local function updateValue(xPos)
+        local relX = math.clamp((xPos - slider.AbsolutePosition.X) / slider.AbsoluteSize.X, 0, 1)
+        value = minVal + relX * (maxVal - minVal)
+        value = math.round(value / inc) * inc
+        value = math.clamp(value, minVal, maxVal)
+        label.Text = name .. ": " .. string.format("%.2f", value)
+        fill.Size = UDim2.new((value - minVal)/(maxVal - minVal), 0, 1, 0)
+        knob.Position = UDim2.new((value - minVal)/(maxVal - minVal), -8, -0.5, 0)
+        callback(value)
+    end
+    
+    knob.MouseButton1Down:Connect(function()
+        dragging = true
+        local mouse = player:GetMouse()
+        local con
+        con = mouse.Move:Connect(function()
+            if dragging then
+                updateValue(mouse.X)
+            end
+        end)
+        local rel
+        rel = mouse.Button1Up:Connect(function()
+            dragging = false
+            con:Disconnect()
+            rel:Disconnect()
+        end)
+    end)
+    
+    slider.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            updateValue(input.Position.X)
+        end
+    end)
+    
+    return frame
+end
+
+-- Fungsi membuat toggle
+local function createToggle(parent, text, default, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -20, 0, 40)
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -50, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.new(1,1,1)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 13
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
+    
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Size = UDim2.new(0, 40, 0, 20)
+    toggleBtn.Position = UDim2.new(1, -45, 0.5, -10)
+    toggleBtn.BackgroundColor3 = default and Color3.fromRGB(100,200,100) or Color3.fromRGB(100,100,100)
+    toggleBtn.Text = ""
+    toggleBtn.Parent = frame
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(1, 0)
+    toggleCorner.Parent = toggleBtn
+    
+    local knobToggle = Instance.new("Frame")
+    knobToggle.Size = UDim2.new(0, 16, 0, 16)
+    knobToggle.Position = default and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+    knobToggle.BackgroundColor3 = Color3.new(1,1,1)
+    knobToggle.Parent = toggleBtn
+    local knobCorner = Instance.new("UICorner")
+    knobCorner.CornerRadius = UDim.new(1, 0)
+    knobCorner.Parent = knobToggle
+    
+    local state = default
+    toggleBtn.MouseButton1Click:Connect(function()
+        state = not state
+        toggleBtn.BackgroundColor3 = state and Color3.fromRGB(100,200,100) or Color3.fromRGB(100,100,100)
+        knobToggle.Position = state and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+        callback(state)
+    end)
+    
+    return frame
+end
+
+-- Fungsi membuat color picker sederhana
+local function createColorPicker(parent, name, defaultColor, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -20, 0, 40)
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -60, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextColor3 = Color3.new(1,1,1)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 13
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
+    
+    local colorBtn = Instance.new("TextButton")
+    colorBtn.Size = UDim2.new(0, 40, 0, 30)
+    colorBtn.Position = UDim2.new(1, -45, 0.5, -15)
+    colorBtn.BackgroundColor3 = defaultColor
+    colorBtn.Text = ""
+    colorBtn.Parent = frame
+    local colorCorner = Instance.new("UICorner")
+    colorCorner.CornerRadius = UDim.new(0, 6)
+    colorCorner.Parent = colorBtn
+    
+    -- Simple color picker dialog (RGB sliders)
+    local function openColorPicker()
+        local dialog = Instance.new("Frame")
+        dialog.Size = UDim2.new(0, 250, 0, 200)
+        dialog.Position = UDim2.new(0.5, -125, 0.5, -100)
+        dialog.BackgroundColor3 = Color3.fromRGB(40,40,50)
+        dialog.BorderSizePixel = 0
+        dialog.Parent = gui
+        local dialogCorner = Instance.new("UICorner")
+        dialogCorner.CornerRadius = UDim.new(0, 8)
+        dialogCorner.Parent = dialog
+        
+        local rSlider = createSlider(dialog, "Red", 0, 1, 0.01, defaultColor.R, function(v) end)
+        rSlider.Size = UDim2.new(1, -20, 0, 50)
+        rSlider.Position = UDim2.new(0, 10, 0, 10)
+        local gSlider = createSlider(dialog, "Green", 0, 1, 0.01, defaultColor.G, function(v) end)
+        gSlider.Size = UDim2.new(1, -20, 0, 50)
+        gSlider.Position = UDim2.new(0, 10, 0, 70)
+        local bSlider = createSlider(dialog, "Blue", 0, 1, 0.01, defaultColor.B, function(v) end)
+        bSlider.Size = UDim2.new(1, -20, 0, 50)
+        bSlider.Position = UDim2.new(0, 10, 0, 130)
+        
+        local okBtn = Instance.new("TextButton")
+        okBtn.Size = UDim2.new(0, 80, 0, 30)
+        okBtn.Position = UDim2.new(1, -90, 1, -40)
+        okBtn.Text = "OK"
+        okBtn.BackgroundColor3 = Color3.fromRGB(70,150,70)
+        okBtn.Parent = dialog
+        okBtn.MouseButton1Click:Connect(function()
+            local newColor = Color3.new(rSlider.Value, gSlider.Value, bSlider.Value)
+            colorBtn.BackgroundColor3 = newColor
+            callback(newColor)
+            dialog:Destroy()
+        end)
+        
+        local cancelBtn = Instance.new("TextButton")
+        cancelBtn.Size = UDim2.new(0, 80, 0, 30)
+        cancelBtn.Position = UDim2.new(1, -180, 1, -40)
+        cancelBtn.Text = "Cancel"
+        cancelBtn.BackgroundColor3 = Color3.fromRGB(150,70,70)
+        cancelBtn.Parent = dialog
+        cancelBtn.MouseButton1Click:Connect(function()
+            dialog:Destroy()
+        end)
+    end
+    
+    colorBtn.MouseButton1Click:Connect(openColorPicker)
+    return frame
+end
+
+-- Fungsi membuat input box
+local function createInput(parent, placeholder, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -20, 0, 40)
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+    
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(1, 0, 1, 0)
+    box.PlaceholderText = placeholder
+    box.BackgroundColor3 = Color3.fromRGB(50,50,60)
+    box.TextColor3 = Color3.new(1,1,1)
+    box.Font = Enum.Font.Gotham
+    box.TextSize = 14
+    box.Parent = frame
+    local boxCorner = Instance.new("UICorner")
+    boxCorner.CornerRadius = UDim.new(0, 6)
+    boxCorner.Parent = box
+    
+    box.FocusLost:Connect(function(enterPressed)
+        if enterPressed then
+            callback(box.Text)
+        end
+    end)
+    return frame
+end
+
+-- ========== NOTIFIKASI (TOAST) ==========
 local function notif(msg, msgType)
-    msgType = msgType or "default"
-    Rayfield:Notify({
-        Title = "Motion Recorder",
-        Content = msg,
-        Duration = 1.5,
-        Type = msgType,
-    })
+    local toast = Instance.new("Frame")
+    toast.Size = UDim2.new(0, 300, 0, 40)
+    toast.Position = UDim2.new(0.5, -150, 1, -50)
+    toast.BackgroundColor3 = Color3.fromRGB(30,30,40)
+    toast.BorderSizePixel = 0
+    toast.Parent = gui
+    local toastCorner = Instance.new("UICorner")
+    toastCorner.CornerRadius = UDim.new(0, 8)
+    toastCorner.Parent = toast
+    
+    local text = Instance.new("TextLabel")
+    text.Size = UDim2.new(1, 0, 1, 0)
+    text.BackgroundTransparency = 1
+    text.Text = msg
+    text.TextColor3 = Color3.new(1,1,1)
+    text.Font = Enum.Font.Gotham
+    text.TextSize = 13
+    text.Parent = toast
+    
+    game:GetService("TweenService"):Create(toast, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {Position = UDim2.new(0.5, -150, 1, -60)}):Play()
+    task.wait(2)
+    game:GetService("TweenService"):Create(toast, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {Position = UDim2.new(0.5, -150, 1, -10)}):Play()
+    task.wait(0.3)
+    toast:Destroy()
     print("[MotionRec] " .. msg)
 end
 
--- ========== INDIKATOR STATUS DI LAYAR ==========
+-- ========== INDIKATOR STATUS ==========
 local function createStatusIndicator()
     if statusLabel then return end
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "MotionRecorderStatus"
-    screenGui.ResetOnSpawn = false
-    screenGui.Parent = player:WaitForChild("PlayerGui")
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 200, 0, 40)
+    frame.Position = UDim2.new(0.5, -100, 0, 10)
+    frame.BackgroundColor3 = Color3.fromRGB(0,0,0)
+    frame.BackgroundTransparency = 0.5
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+    local frameCorner = Instance.new("UICorner")
+    frameCorner.CornerRadius = UDim.new(0, 10)
+    frameCorner.Parent = frame
     
-    local textLabel = Instance.new("TextLabel")
-    textLabel.Size = UDim2.new(0, 200, 0, 40)
-    textLabel.Position = UDim2.new(0.5, -100, 0.02, 0)
-    textLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    textLabel.BackgroundTransparency = 0.3
-    textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    textLabel.Font = Enum.Font.GothamBold
-    textLabel.TextSize = 18
-    textLabel.Text = ""
-    textLabel.BorderSizePixel = 0
-    textLabel.Parent = screenGui
-    
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 10)
-    corner.Parent = textLabel
-    
-    statusLabel = textLabel
+    statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(1, 0, 1, 0)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Text = ""
+    statusLabel.TextColor3 = Color3.new(1,1,1)
+    statusLabel.Font = Enum.Font.GothamBold
+    statusLabel.TextSize = 16
+    statusLabel.Parent = frame
 end
 
 local function updateStatus(text, color)
     if statusLabel then
         statusLabel.Text = text
-        statusLabel.TextColor3 = color or Color3.fromRGB(255, 255, 255)
-        statusLabel.Visible = (text ~= "")
+        statusLabel.TextColor3 = color or Color3.new(1,1,1)
+        statusLabel.Parent.Parent.Visible = (text ~= "")
     end
 end
 
--- ========== TRAIL VISUAL (GARIS JEJAK NEON) ==========
+-- ========== FUNGSI TRAIL ==========
 local function clearTrail()
     for _, part in pairs(trailParts) do
-        if part and part.Parent then
-            part:Destroy()
-        end
+        if part and part.Parent then part:Destroy() end
     end
     trailParts = {}
 end
 
-local function addTrailPoint(position)
+local function addTrailPoint(pos)
     if not trailActive then return end
     local part = Instance.new("Part")
     part.Size = Vector3.new(0.3, 0.3, 0.3)
-    part.Position = position
+    part.Position = pos
     part.Anchored = true
     part.CanCollide = false
     part.BrickColor = BrickColor.new(trailColor)
     part.Material = Enum.Material.Neon
     part.Parent = workspace
-    
-    -- Efek fade out setelah beberapa detik (opsional)
     game:GetService("Debris"):AddItem(part, 10)
-    
     table.insert(trailParts, part)
-    
-    -- Batasi jumlah titik trail (agar tidak terlalu berat)
     if #trailParts > 200 then
         local oldest = table.remove(trailParts, 1)
-        if oldest and oldest.Parent then oldest:Destroy() end
+        if oldest then oldest:Destroy() end
     end
 end
 
@@ -135,14 +540,12 @@ end
 
 local function stopTrail()
     trailActive = false
-    -- Jangan hapus trail agar rute tetap terlihat
-    -- notif("Trail dihentikan, jejak tetap ada", "info")
 end
 
 -- Update trail setiap frame
-runService.RenderStepped:Connect(function(deltaTime)
+runService.RenderStepped:Connect(function(delta)
     if trailActive and hrp and hrp.Parent then
-        trailTimer = trailTimer + deltaTime
+        trailTimer = trailTimer + delta
         if trailTimer >= trailInterval then
             trailTimer = 0
             addTrailPoint(hrp.Position)
@@ -157,9 +560,8 @@ local function startRecording()
     recordedFrames = {}
     startTime = os.clock()
     recording = true
-    startTrail() -- mulai jejak neon
-    updateStatus("🔴 RECORDING", Color3.fromRGB(255, 50, 50))
-    
+    startTrail()
+    updateStatus("🔴 RECORDING", Color3.fromRGB(255,50,50))
     if hrp and hrp.Parent then
         table.insert(recordedFrames, {
             time = 0,
@@ -169,7 +571,7 @@ local function startRecording()
             moveDirection = humanoid.MoveDirection
         })
     end
-    notif("🔴 Merekam gerakan + lompatan...", "info")
+    notif("Merekam gerakan + lompatan...", "info")
 end
 
 local function stopRecording()
@@ -177,7 +579,6 @@ local function stopRecording()
     recording = false
     stopTrail()
     updateStatus("", Color3.new(1,1,1))
-    
     if #recordedFrames < 2 then
         notif("Rekaman terlalu pendek", "error")
         recordedFrames = {}
@@ -185,10 +586,9 @@ local function stopRecording()
         return
     end
     local duration = recordedFrames[#recordedFrames].time
-    notif(string.format("⏹️ Berhenti. %d frame, %.2f detik", #recordedFrames, duration), "success")
+    notif(string.format("Berhenti. %d frame, %.2f detik", #recordedFrames, duration), "success")
 end
 
--- Rekam loop (RenderStepped)
 runService.RenderStepped:Connect(function()
     if recording and hrp and hrp.Parent then
         local now = os.clock() - startTime
@@ -202,7 +602,7 @@ runService.RenderStepped:Connect(function()
     end
 end)
 
--- ========== PLAYBACK DENGAN SPEED, LOOP, REVERSE ==========
+-- ========== PLAYBACK ==========
 local function stopPlayback()
     if not playing then return end
     stopPlaybackFlag = true
@@ -219,7 +619,7 @@ local function startPlayback(data, isReverse, speed, loop)
     if recording then notif("Hentikan rekaman dulu", "error") return end
     if playing then stopPlayback() end
     if not data or #data < 2 then notif("Tidak ada data rekaman", "error") return end
-
+    
     stopPlaybackFlag = false
     playing = true
     reverse = isReverse
@@ -228,20 +628,16 @@ local function startPlayback(data, isReverse, speed, loop)
     lastJumpFrame = false
     playbackSpeed = speed or 1.0
     loopMode = loop or false
-
-    updateStatus(reverse and "🔁 PLAYING REVERSE" or "▶️ PLAYING", Color3.fromRGB(0, 255, 0))
-
+    
+    updateStatus(reverse and "🔁 PLAYING REVERSE" or "▶️ PLAYING", Color3.fromRGB(0,255,0))
     workspace.Gravity = 0
     humanoid.PlatformStand = true
-
+    
     task.spawn(function()
         local totalTime = playbackData[#playbackData].time
-        local effectiveTotal = totalTime / playbackSpeed
-        
         while playing and not stopPlaybackFlag do
             local now = (os.clock() - playbackStartTime) * playbackSpeed
             local progress
-            
             if reverse then
                 progress = 1 - (now / totalTime)
                 if progress < 0 then progress = 0 end
@@ -252,30 +648,21 @@ local function startPlayback(data, isReverse, speed, loop)
             
             if (not reverse and progress >= 1) or (reverse and progress <= 0) then
                 if loopMode then
-                    -- Loop: reset waktu
                     playbackStartTime = os.clock()
-                    continue
                 else
                     break
                 end
             end
             
-            -- Cari frame berdasarkan waktu
-            local idx = 1
             local targetTime = progress * totalTime
+            local idx = 1
             if reverse then
                 for i = #playbackData, 1, -1 do
-                    if playbackData[i].time <= targetTime then
-                        idx = i
-                        break
-                    end
+                    if playbackData[i].time <= targetTime then idx = i; break end
                 end
             else
                 for i = 1, #playbackData do
-                    if playbackData[i].time >= targetTime then
-                        idx = i
-                        break
-                    end
+                    if playbackData[i].time >= targetTime then idx = i; break end
                 end
             end
             
@@ -283,25 +670,18 @@ local function startPlayback(data, isReverse, speed, loop)
             if frame then
                 hrp.CFrame = frame.cframe
                 hrp.AssemblyLinearVelocity = frame.velocity
-                
                 if frame.moveDirection.Magnitude > 0 then
-                    local targetPos = hrp.Position + (frame.moveDirection * 10)
-                    humanoid:MoveTo(targetPos)
+                    humanoid:MoveTo(hrp.Position + frame.moveDirection * 10)
                 else
                     humanoid:MoveTo(hrp.Position)
                 end
-                
-                if frame.isJumping and not lastJumpFrame then
-                    if humanoid.FloorMaterial ~= Enum.Material.Air then
-                        humanoid.Jump = true
-                    end
+                if frame.isJumping and not lastJumpFrame and humanoid.FloorMaterial ~= Enum.Material.Air then
+                    humanoid.Jump = true
                 end
                 lastJumpFrame = frame.isJumping
             end
-            
-            task.wait(0.016) -- ~60 FPS
+            task.wait(0.016)
         end
-        
         workspace.Gravity = 196.2
         humanoid.PlatformStand = false
         playing = false
@@ -310,124 +690,87 @@ local function startPlayback(data, isReverse, speed, loop)
     end)
 end
 
--- ========== SAVE & LOAD (MENGGUNAKAN HTTP SERVICE / SIMULASI FILE) ==========
--- Simpan ke file (menggunakan DataStore style via HttpService JSON)
+-- ========== SAVE/LOAD ==========
 local function saveRecording(name)
-    if #recordedFrames == 0 then notif("Tidak ada rekaman untuk disimpan", "error") return end
-    
-    local saveData = {
-        name = name,
-        frames = recordedFrames,
-        timestamp = os.time()
-    }
-    local json = httpService:JSONEncode(saveData)
-    -- Simpan di penanda (menggunakan StringValue di player)
-    local folder = Instance.new("Folder")
+    if #recordedFrames == 0 then notif("Tidak ada rekaman", "error") return end
+    local folder = player:FindFirstChild(SAVE_FOLDER) or Instance.new("Folder", player)
     folder.Name = SAVE_FOLDER
-    folder.Parent = player
-    local value = Instance.new("StringValue")
-    value.Name = name
-    value.Value = json
-    value.Parent = folder
-    
-    notif("Rekaman '" .. name .. "' disimpan!", "success")
+    local val = Instance.new("StringValue")
+    val.Name = name
+    val.Value = httpService:JSONEncode({frames = recordedFrames, timestamp = os.time()})
+    val.Parent = folder
+    notif("Rekaman '" .. name .. "' disimpan", "success")
 end
 
 local function loadRecording(name)
     local folder = player:FindFirstChild(SAVE_FOLDER)
-    if not folder then notif("Belum ada rekaman tersimpan", "error") return false end
-    local value = folder:FindFirstChild(name)
-    if not value then notif("Rekaman '" .. name .. "' tidak ditemukan", "error") return false end
-    
-    local success, data = pcall(httpService.JSONDecode, httpService, value.Value)
-    if not success then notif("Gagal memuat rekaman", "error") return false end
-    
+    if not folder then notif("Belum ada rekaman", "error") return false end
+    local val = folder:FindFirstChild(name)
+    if not val then notif("Tidak ditemukan", "error") return false end
+    local success, data = pcall(httpService.JSONDecode, httpService, val.Value)
+    if not success then notif("Gagal memuat", "error") return false end
     recordedFrames = data.frames
-    notif("Memuat rekaman '" .. name .. "' (" .. #recordedFrames .. " frame)", "success")
+    notif("Memuat '" .. name .. "' (" .. #recordedFrames .. " frame)", "success")
     return true
-end
-
-local function getSaveList()
-    local folder = player:FindFirstChild(SAVE_FOLDER)
-    if not folder then return {} end
-    local list = {}
-    for _, v in pairs(folder:GetChildren()) do
-        if v:IsA("StringValue") then
-            table.insert(list, v.Name)
-        end
-    end
-    return list
 end
 
 local function deleteSave(name)
     local folder = player:FindFirstChild(SAVE_FOLDER)
     if folder then
-        local value = folder:FindFirstChild(name)
-        if value then value:Destroy() end
-        notif("Rekaman '" .. name .. "' dihapus", "info")
+        local val = folder:FindFirstChild(name)
+        if val then val:Destroy(); notif("Dihapus: " .. name, "info") end
     end
 end
 
--- Reset rekaman saat ini
 local function resetRecording()
     recordedFrames = {}
     clearTrail()
-    notif("Rekaman saat ini direset", "info")
+    notif("Rekaman direset", "info")
 end
 
--- ========== EXPORT / IMPORT JSON ==========
+-- ========== EXPORT/IMPORT ==========
 local function exportToClipboard()
     if #recordedFrames == 0 then notif("Tidak ada rekaman", "error") return end
-    local data = {
-        frames = recordedFrames
-    }
-    local json = httpService:JSONEncode(data)
-    -- Set ke clipboard (menggunakan setclipboard jika tersedia)
+    local json = httpService:JSONEncode({frames = recordedFrames})
     if setclipboard then
         setclipboard(json)
-        notif("Data rekaman disalin ke clipboard (" .. #json .. " karakter)", "success")
+        notif("Data disalin ke clipboard (" .. #json .. " karakter)", "success")
     else
-        notif("Clipboard tidak didukung di environment ini", "error")
+        notif("Clipboard tidak didukung", "error")
     end
 end
 
-local function importFromClipboard()
-    if not setclipboard then notif("Import tidak didukung", "error") return end
-    -- Biasanya kita perlu paste, tapi tidak ada getclipboard. Minta user input? 
-    -- Alternatif: buat TextBox untuk paste JSON
-    notif("Fungsi import memerlukan input manual. Gunakan tombol 'Paste JSON'", "info")
-end
-
--- Buat GUI Input untuk paste JSON
 local function showImportDialog()
-    local dialog = Instance.new("ScreenGui")
-    dialog.Name = "ImportDialog"
-    dialog.Parent = player:WaitForChild("PlayerGui")
-    
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 400, 0, 300)
-    frame.Position = UDim2.new(0.5, -200, 0.5, -150)
-    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-    frame.BorderSizePixel = 0
-    frame.Parent = dialog
+    local dialog = Instance.new("Frame")
+    dialog.Size = UDim2.new(0, 400, 0, 300)
+    dialog.Position = UDim2.new(0.5, -200, 0.5, -150)
+    dialog.BackgroundColor3 = Color3.fromRGB(30,30,40)
+    dialog.BorderSizePixel = 0
+    dialog.Parent = gui
+    local dialogCorner = Instance.new("UICorner")
+    dialogCorner.CornerRadius = UDim.new(0, 8)
+    dialogCorner.Parent = dialog
     
     local textBox = Instance.new("TextBox")
     textBox.Size = UDim2.new(0.9, 0, 0.7, 0)
     textBox.Position = UDim2.new(0.05, 0, 0.05, 0)
-    textBox.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    textBox.BackgroundColor3 = Color3.fromRGB(50,50,60)
     textBox.TextColor3 = Color3.new(1,1,1)
     textBox.Text = "Paste JSON di sini..."
     textBox.TextWrapped = true
     textBox.MultiLine = true
     textBox.ClearTextOnFocus = false
-    textBox.Parent = frame
+    textBox.Parent = dialog
+    local boxCorner = Instance.new("UICorner")
+    boxCorner.CornerRadius = UDim.new(0, 6)
+    boxCorner.Parent = textBox
     
     local importBtn = Instance.new("TextButton")
     importBtn.Size = UDim2.new(0.4, 0, 0.15, 0)
     importBtn.Position = UDim2.new(0.05, 0, 0.8, 0)
     importBtn.Text = "Import"
-    importBtn.BackgroundColor3 = Color3.fromRGB(70, 150, 70)
-    importBtn.Parent = frame
+    importBtn.BackgroundColor3 = Color3.fromRGB(70,150,70)
+    importBtn.Parent = dialog
     importBtn.MouseButton1Click:Connect(function()
         local success, data = pcall(httpService.JSONDecode, httpService, textBox.Text)
         if success and data.frames then
@@ -443,161 +786,114 @@ local function showImportDialog()
     cancelBtn.Size = UDim2.new(0.4, 0, 0.15, 0)
     cancelBtn.Position = UDim2.new(0.55, 0, 0.8, 0)
     cancelBtn.Text = "Batal"
-    cancelBtn.BackgroundColor3 = Color3.fromRGB(150, 70, 70)
-    cancelBtn.Parent = frame
+    cancelBtn.BackgroundColor3 = Color3.fromRGB(150,70,70)
+    cancelBtn.Parent = dialog
     cancelBtn.MouseButton1Click:Connect(function()
         dialog:Destroy()
     end)
 end
 
--- ========== UI RAYFIELD (LENGKAP) ==========
-local Window = Rayfield:CreateWindow({
-    Name = "Motion Recorder Pro",
-    Icon = "rbxassetid://6031097358",
-    LoadingTitle = "Motion Recorder",
-    LoadingSubtitle = "Complete Edition",
-    ConfigurationSaving = {
-        Enabled = true,
-        FolderName = "MotionRecorderPro",
-        FileName = "Settings"
-    },
-    KeySystem = false,
-})
+-- ========== MEMBUAT UI RAYFIELD-LIKE ==========
+createStatusIndicator()
 
-local MainTab = Window:CreateTab("🎥 Kontrol", nil)
-local TrailTab = Window:CreateTab("✨ Jejak Neon", nil)
-local SaveTab = Window:CreateTab("💾 Save/Load", nil)
+-- Tab: Kontrol
+local kontrolTab = createTab("🎥 Kontrol")
+local section1 = createSection(kontrolTab, "Rekaman")
+createButton(section1, "🔴 Mulai Rekam", startRecording)
+createButton(section1, "⏹️ Stop Rekam", stopRecording)
+createButton(section1, "🗑️ Reset Rekaman", resetRecording)
 
--- ===== MAIN TAB =====
-MainTab:CreateSection("Rekaman")
-MainTab:CreateButton({ Name = "🔴 Mulai Rekam", Callback = startRecording })
-MainTab:CreateButton({ Name = "⏹️ Stop Rekam", Callback = stopRecording })
-MainTab:CreateButton({ Name = "🗑️ Reset Rekaman", Callback = resetRecording })
-
-MainTab:CreateSection("Playback")
-MainTab:CreateButton({ Name = "▶️ Play Normal", Callback = function()
-    if #recordedFrames >= 2 then
-        startPlayback(recordedFrames, false, playbackSpeed, loopMode)
+local section2 = createSection(kontrolTab, "Playback")
+createButton(section2, "▶️ Play Normal", function()
+    if #recordedFrames >= 2 then startPlayback(recordedFrames, false, playbackSpeed, loopMode)
     else notif("Rekam dulu", "error") end
-end})
-MainTab:CreateButton({ Name = "🔁 Play Reverse", Callback = function()
-    if #recordedFrames >= 2 then
-        startPlayback(recordedFrames, true, playbackSpeed, loopMode)
+end)
+createButton(section2, "🔁 Play Reverse", function()
+    if #recordedFrames >= 2 then startPlayback(recordedFrames, true, playbackSpeed, loopMode)
     else notif("Rekam dulu", "error") end
-end})
-MainTab:CreateButton({ Name = "⏹️ Stop Playback", Callback = stopPlayback })
+end)
+createButton(section2, "⏹️ Stop Playback", stopPlayback)
 
--- Slider kecepatan
-MainTab:CreateSlider({
-    Name = "⏩ Kecepatan Playback",
-    Range = {0.25, 3},
-    Increment = 0.05,
-    Suffix = "x",
-    CurrentValue = 1,
-    Flag = "PlaybackSpeed",
-    Callback = function(v)
-        playbackSpeed = v
-        notif("Kecepatan: " .. v .. "x", "default")
-    end
-})
+-- Slider kecepatan (ditempatkan langsung di tab)
+local speedSliderFrame = Instance.new("Frame")
+speedSliderFrame.Size = UDim2.new(1, -20, 0, 60)
+speedSliderFrame.BackgroundTransparency = 1
+speedSliderFrame.Parent = kontrolTab
+createSlider(speedSliderFrame, "Kecepatan Playback", 0.25, 3, 0.05, 1, function(v)
+    playbackSpeed = v
+    notif("Kecepatan: " .. v .. "x", "default")
+end)
 
 -- Toggle Loop
-MainTab:CreateToggle({
-    Name = "🔄 Loop Mode",
-    CurrentValue = false,
-    Flag = "LoopMode",
-    Callback = function(v)
-        loopMode = v
-        notif(loopMode and "Loop mode ON" or "Loop mode OFF", "info")
-    end
-})
+local toggleFrame = Instance.new("Frame")
+toggleFrame.Size = UDim2.new(1, -20, 0, 40)
+toggleFrame.BackgroundTransparency = 1
+toggleFrame.Parent = kontrolTab
+createToggle(toggleFrame, "Loop Mode", false, function(v)
+    loopMode = v
+    notif(loopMode and "Loop ON" or "Loop OFF", "info")
+end)
 
--- ===== TRAIL TAB =====
-TrailTab:CreateSection("Visual Trail (Jejak Neon)")
-TrailTab:CreateToggle({
-    Name = "Aktifkan Jejak Saat Rekam",
-    CurrentValue = true,
-    Callback = function(v)
-        -- Trail otomatis aktif saat rekam; ini hanya pre-set
-        trailActive = v
-        if not v then clearTrail() end
-        notif(v and "Jejak aktif" or "Jejak nonaktif", "info")
-    end
-})
-TrailTab:CreateColorPicker({
-    Name = "Warna Jejak",
-    Color = Color3.fromRGB(0, 255, 255),
-    Flag = "TrailColor",
-    Callback = function(c)
-        trailColor = c
-        -- Update warna semua part yang sudah ada?
-        for _, part in pairs(trailParts) do
-            if part and part.Parent then
-                part.BrickColor = BrickColor.new(c)
-            end
-        end
-        notif("Warna jejak diubah", "default")
-    end
-})
-TrailTab:CreateSlider({
-    Name = "Interval Titik (detik)",
-    Range = {0.1, 1},
-    Increment = 0.05,
-    Suffix = "s",
-    CurrentValue = 0.3,
-    Flag = "TrailInterval",
-    Callback = function(v)
-        trailInterval = v
-    end
-})
-TrailTab:CreateButton({ Name = "Hapus Semua Jejak", Callback = function()
-    clearTrail()
-    notif("Jejak dihapus", "info")
-end})
+-- Tab: Jejak Neon
+local trailTab = createTab("✨ Jejak Neon")
+local trailSection = createSection(trailTab, "Visual Trail")
+local trailToggleFrame = Instance.new("Frame")
+trailToggleFrame.Size = UDim2.new(1, -20, 0, 40)
+trailToggleFrame.BackgroundTransparency = 1
+trailToggleFrame.Parent = trailTab
+createToggle(trailToggleFrame, "Aktifkan Jejak Saat Rekam", true, function(v)
+    trailActive = v
+    if not v then clearTrail() end
+    notif(v and "Jejak aktif" or "Jejak nonaktif", "info")
+end)
 
--- ===== SAVE/LOAD TAB =====
-SaveTab:CreateSection("Simpan & Muat Rekaman")
-SaveTab:CreateInput({
-    Name = "Nama Rekaman",
-    PlaceholderText = "nama_rekaman",
-    RemoveTextAfterFocus = false,
-    Flag = "SaveName",
-    Callback = function(text)
-        currentSaveName = text
+local colorPickerFrame = Instance.new("Frame")
+colorPickerFrame.Size = UDim2.new(1, -20, 0, 40)
+colorPickerFrame.BackgroundTransparency = 1
+colorPickerFrame.Parent = trailTab
+createColorPicker(colorPickerFrame, "Warna Jejak", trailColor, function(c)
+    trailColor = c
+    for _, part in pairs(trailParts) do
+        if part and part.Parent then part.BrickColor = BrickColor.new(c) end
     end
-})
-SaveTab:CreateButton({ Name = "💾 Simpan Rekaman", Callback = function()
-    if currentSaveName and currentSaveName ~= "" then
-        saveRecording(currentSaveName)
-    else
-        notif("Masukkan nama rekaman", "error")
-    end
-end})
-SaveTab:CreateButton({ Name = "📂 Muat Rekaman", Callback = function()
-    local saves = getSaveList()
-    if #saves == 0 then notif("Tidak ada rekaman tersimpan", "error") return end
-    -- Pilih dari dropdown? Untuk sederhana, gunakan input nama lagi.
-    notif("Ketik nama rekaman di kolom, lalu tekan Load", "info")
-end})
-SaveTab:CreateButton({ Name = "🔁 Load (gunakan nama di atas)", Callback = function()
-    if currentSaveName and currentSaveName ~= "" then
-        loadRecording(currentSaveName)
-    else
-        notif("Masukkan nama rekaman", "error")
-    end
-end})
-SaveTab:CreateButton({ Name = "🗑️ Hapus Rekaman", Callback = function()
-    if currentSaveName and currentSaveName ~= "" then
-        deleteSave(currentSaveName)
-    else
-        notif("Masukkan nama rekaman", "error")
-    end
-end})
+end)
 
-SaveTab:CreateSection("Export / Import JSON")
-SaveTab:CreateButton({ Name = "📋 Export ke Clipboard", Callback = exportToClipboard })
-SaveTab:CreateButton({ Name = "📥 Import JSON (Paste)", Callback = showImportDialog })
+local intervalSliderFrame = Instance.new("Frame")
+intervalSliderFrame.Size = UDim2.new(1, -20, 0, 60)
+intervalSliderFrame.BackgroundTransparency = 1
+intervalSliderFrame.Parent = trailTab
+createSlider(intervalSliderFrame, "Interval Titik (detik)", 0.1, 1, 0.05, 0.3, function(v)
+    trailInterval = v
+end)
 
--- ========== INISIALISASI ==========
-createStatusIndicator()
-notif("✅ Motion Recorder Pro siap! (dengan trail neon, save/load, speed, loop, import/export)", "success")
+createButton(trailTab, "Hapus Semua Jejak", clearTrail)
+
+-- Tab: Save/Load
+local saveTab = createTab("💾 Save/Load")
+local saveSection = createSection(saveTab, "Simpan & Muat")
+local inputFrame = Instance.new("Frame")
+inputFrame.Size = UDim2.new(1, -20, 0, 40)
+inputFrame.BackgroundTransparency = 1
+inputFrame.Parent = saveTab
+createInput(inputFrame, "Nama rekaman", function(text)
+    currentSaveName = text
+end)
+createButton(saveTab, "💾 Simpan Rekaman", function()
+    if currentSaveName and currentSaveName ~= "" then saveRecording(currentSaveName)
+    else notif("Masukkan nama", "error") end
+end)
+createButton(saveTab, "📂 Muat Rekaman", function()
+    if currentSaveName and currentSaveName ~= "" then loadRecording(currentSaveName)
+    else notif("Masukkan nama", "error") end
+end)
+createButton(saveTab, "🗑️ Hapus Rekaman", function()
+    if currentSaveName and currentSaveName ~= "" then deleteSave(currentSaveName)
+    else notif("Masukkan nama", "error") end
+end)
+
+local exportSection = createSection(saveTab, "Export / Import")
+createButton(saveTab, "📋 Export ke Clipboard", exportToClipboard)
+createButton(saveTab, "📥 Import JSON (Paste)", showImportDialog)
+
+-- Inisialisasi awal
+notif("✅ Motion Recorder Pro siap! (UI tanpa library)", "success")
